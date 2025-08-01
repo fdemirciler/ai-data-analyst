@@ -137,9 +137,32 @@ class SandboxEnvironment:
             exec_globals = self.safe_globals.copy()
             if globals_dict:
                 # Only add safe items from provided globals
+                logger.info(
+                    f"Adding globals_dict items to exec_globals: {list(globals_dict.keys())}"
+                )
                 for key, value in globals_dict.items():
+                    logger.info(f"Checking global: {key} = {type(value)}")
                     if self._is_safe_value(key, value):
                         exec_globals[key] = value
+                        logger.info(f"Added {key} to exec_globals")
+                    else:
+                        logger.warning(f"Rejected unsafe global: {key} = {type(value)}")
+
+            logger.info(f"Final exec_globals keys: {list(exec_globals.keys())}")
+
+            # Debug: Check if print is actually available
+            if "__builtins__" in exec_globals:
+                builtins_content = exec_globals["__builtins__"]
+                if isinstance(builtins_content, dict):
+                    logger.info(
+                        f"Builtins is dict with keys: {list(builtins_content.keys())}"
+                    )
+                    logger.info(f"Print in builtins: {'print' in builtins_content}")
+                else:
+                    logger.info(f"Builtins type: {type(builtins_content)}")
+                    logger.info(
+                        f"Builtins has print: {hasattr(builtins_content, 'print')}"
+                    )
 
             exec_locals = {}
 
@@ -309,8 +332,14 @@ class SandboxEnvironment:
             "print",
         }
 
+        # Import builtins module to access builtin functions properly
+        import builtins
+
         for name in safe_builtin_names:
-            if hasattr(__builtins__, name):
+            # Try builtins module first, then __builtins__
+            if hasattr(builtins, name):
+                safe_builtins[name] = getattr(builtins, name)
+            elif hasattr(__builtins__, name):
                 safe_builtins[name] = getattr(__builtins__, name)
 
         return safe_builtins
@@ -420,6 +449,24 @@ class SandboxEnvironment:
         if hasattr(value, "__file__"):
             return False
 
+        # Allow pandas DataFrames and Series (for data analysis)
+        try:
+            import pandas as pd
+
+            if isinstance(value, (pd.DataFrame, pd.Series)):
+                return True
+        except ImportError:
+            pass
+
+        # Allow numpy arrays
+        try:
+            import numpy as np
+
+            if isinstance(value, np.ndarray):
+                return True
+        except ImportError:
+            pass
+
         # Allow basic data types
         safe_types = (int, float, str, bool, list, dict, tuple, set, type(None))
 
@@ -430,6 +477,15 @@ class SandboxEnvironment:
             json.dumps(value, default=str)
             return isinstance(value, safe_types)
         except (TypeError, ValueError):
+            # For pandas/numpy objects, we can't JSON serialize but they're safe
+            try:
+                import pandas as pd
+                import numpy as np
+
+                if isinstance(value, (pd.DataFrame, pd.Series, np.ndarray)):
+                    return True
+            except ImportError:
+                pass
             return False
 
 
@@ -474,9 +530,20 @@ class SecurePythonExecutor:
         execution_context = {}
         if context_data:
             # Add data to context (e.g., DataFrames, analysis results)
+            logger.info(
+                f"Processing context_data with keys: {list(context_data.keys())}"
+            )
             for key, value in context_data.items():
+                logger.info(f"Checking context value: {key} = {type(value)}")
                 if self._is_safe_context_value(key, value):
                     execution_context[key] = value
+                    logger.info(f"Added {key} to execution context")
+                else:
+                    logger.warning(
+                        f"Rejected unsafe context value: {key} = {type(value)}"
+                    )
+
+        logger.info(f"Final execution_context keys: {list(execution_context.keys())}")
 
         # Execute in sandbox
         return self.sandbox.execute_code(code, execution_context)

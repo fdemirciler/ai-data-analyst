@@ -68,9 +68,9 @@ The system consists of a layered architecture with secure execution at its core:
 - **Vite**: Fast development and build tooling
 
 ### LLM Integration
-- **Primary**: Google Gemini 2.0 Flash
-- **Secondary**: OpenAI GPT-4o-mini  
-- **Tertiary**: Anthropic Claude 3.5 Haiku
+- **Primary**: gemini-2.5-flash
+- **Secondary**: qwen/qwen3-coder:free  
+- **Tertiary**: meta-llama/Llama-3.3-70B-Instruct-Turbo-Free
 
 ## 🚀 Quick Start
 

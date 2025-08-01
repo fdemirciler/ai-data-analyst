@@ -11,6 +11,8 @@ import {
 } from "lucide-react";
 import { Button } from "./components/ui/button";
 import { Textarea } from "./components/ui/textarea";
+import { CodeSnippet } from "./components/ui/code-snippet";
+import { useAnalyticsApi } from "./hooks/useApi";
 
 // Agent Logo Component - atomic orbital design
 function BoxAILogo({
@@ -83,6 +85,8 @@ interface UploadedFile {
   size: number;
   url: string;
   analysisResult?: string;
+  rows?: number;
+  columns?: number;
 }
 
 interface Message {
@@ -91,22 +95,29 @@ interface Message {
   content: string;
   timestamp: Date;
   files?: UploadedFile[];
+  isStreaming?: boolean;
+  codeSnippets?: Array<{
+    code: string;
+    language: string;
+    title?: string;
+    collapsed: boolean;
+  }>;
 }
 
 export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
-  const [inputText, setInputText] = useState(
-    "",
-  );
+  const [inputText, setInputText] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(false);
-  const [uploadedFiles, setUploadedFiles] = useState<
-    UploadedFile[]
-  >([]);
+  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [isInputExpanded, setIsInputExpanded] = useState(false);
+  const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const api = useAnalyticsApi();
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({
@@ -143,60 +154,61 @@ export default function App() {
   const handleFileChange = async (
     event: React.ChangeEvent<HTMLInputElement>,
   ) => {
+    console.log('App: File change event triggered');
     const files = Array.from(event.target.files || []);
+    if (files.length === 0) return;
 
-    for (const file of files) {
-      const fileId =
-        Date.now().toString() +
-        Math.random().toString(36).substr(2, 9);
-      const fileUrl = URL.createObjectURL(file);
+    console.log('App: Selected files:', files.map(f => f.name));
 
-      const uploadedFile: UploadedFile = {
-        id: fileId,
-        name: file.name,
-        type: file.type,
-        size: file.size,
-        url: fileUrl,
-      };
+    // Create temporary file objects for UI
+    const tempFiles: UploadedFile[] = files.map(file => ({
+      id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+      name: file.name,
+      type: file.type,
+      size: file.size,
+      url: URL.createObjectURL(file),
+      analysisResult: "Processing..."
+    }));
 
-      setUploadedFiles((prev) => [...prev, uploadedFile]);
+    console.log('App: Created temp files:', tempFiles);
+    setUploadedFiles(prev => [...prev, ...tempFiles]);
 
-      // Simulate file analysis
-      setTimeout(() => {
-        let analysisResult = "";
+    try {
+      // Upload files using the API
+      console.log('App: Starting API upload...');
+      const uploadedFiles = await api.uploadFiles(files);
+      console.log('App: API upload completed:', uploadedFiles);
 
-        if (file.type.startsWith("image/")) {
-          analysisResult = `Image Analysis: This appears to be a medical document or chart. I can see text and structured data that may contain patient information. The image shows clinical data formatting typical of healthcare records.`;
-        } else if (
-          file.type === "application/pdf" ||
-          file.name.endsWith(".pdf")
-        ) {
-          analysisResult = `PDF Analysis: This document contains ${Math.floor(Math.random() * 20) + 5} pages of clinical documentation. I can identify structured data, patient demographics, and compliance-related content.`;
-        } else if (
-          file.type.startsWith("text/") ||
-          file.name.endsWith(".txt") ||
-          file.name.endsWith(".docx")
-        ) {
-          analysisResult = `Document Analysis: This text document contains clinical protocols and compliance guidelines. I've identified key sections related to patient data handling, privacy requirements, and operational procedures.`;
-        } else {
-          analysisResult = `File Analysis: I've processed this file and identified it as a clinical operations document. The content appears to contain relevant compliance and procedural information.`;
+      // Update the temporary files with actual results
+      setUploadedFiles(prev => prev.map(tempFile => {
+        const uploaded = uploadedFiles.find(u => u.name === tempFile.name);
+        if (uploaded) {
+          return {
+            ...tempFile,
+            id: uploaded.id,
+            analysisResult: uploaded.analysisResult || `Data loaded: ${uploaded.rows} rows × ${uploaded.columns} columns`,
+            rows: uploaded.rows,
+            columns: uploaded.columns
+          };
         }
-
-        setUploadedFiles((prev) =>
-          prev.map((f) =>
-            f.id === fileId ? { ...f, analysisResult } : f,
-          ),
-        );
-      }, 1500);
+        return tempFile;
+      }));
+    } catch (error) {
+      console.error('App: Upload failed:', error);
+      // Update failed files
+      setUploadedFiles(prev => prev.map(tempFile => {
+        if (tempFiles.some(t => t.id === tempFile.id)) {
+          return { ...tempFile, analysisResult: "Upload failed" };
+        }
+        return tempFile;
+      }));
     }
 
     // Clear the input
     if (event.target) {
       event.target.value = "";
     }
-  };
-
-  const removeFile = (fileId: string) => {
+  }; const removeFile = (fileId: string) => {
     setUploadedFiles((prev) => {
       const fileToRemove = prev.find((f) => f.id === fileId);
       if (fileToRemove) {
@@ -207,132 +219,111 @@ export default function App() {
   };
 
   const handleSendMessage = async () => {
-    if (
-      (!inputText.trim() && uploadedFiles.length === 0) ||
-      isLoading
-    )
-      return;
+    if ((!inputText.trim() && uploadedFiles.length === 0) || isLoading) return;
 
     const userMessage: Message = {
       id: Date.now().toString(),
       type: "user",
       content: inputText.trim(),
       timestamp: new Date(),
-      files:
-        uploadedFiles.length > 0
-          ? [...uploadedFiles]
-          : undefined,
+      files: uploadedFiles.length > 0 ? [...uploadedFiles] : undefined,
     };
 
-    setMessages((prev) => [...prev, userMessage]);
+    setMessages(prev => [...prev, userMessage]);
+    const originalFiles = [...uploadedFiles];
     setInputText("");
     setUploadedFiles([]);
     setIsLoading(true);
 
-    // Simulate AI response
-    setTimeout(() => {
-      let responseContent = "";
+    // Create assistant message for streaming
+    const assistantMessageId = (Date.now() + 1).toString();
+    setStreamingMessageId(assistantMessageId);
 
-      if (userMessage.files && userMessage.files.length > 0) {
-        const fileAnalyses = userMessage.files
-          .filter((f) => f.analysisResult)
-          .map((f) => f.analysisResult)
-          .join("\n\n");
+    const assistantMessage: Message = {
+      id: assistantMessageId,
+      type: "assistant",
+      content: "",
+      timestamp: new Date(),
+      isStreaming: true,
+      codeSnippets: []
+    };
 
-        responseContent = `I've analyzed the uploaded files and your question. Here's my comprehensive response:
+    setMessages(prev => [...prev, assistantMessage]);
 
-**File Analysis Summary:**
-${fileAnalyses}
+    try {
+      // Convert uploaded files to File objects for API
+      const filesToSend = originalFiles.length > 0
+        ? await Promise.all(originalFiles.map(async (uploadedFile) => {
+          const response = await fetch(uploadedFile.url);
+          const blob = await response.blob();
+          return new File([blob], uploadedFile.name, { type: uploadedFile.type });
+        }))
+        : undefined;
 
-**Compliance Response Based on Files and Query:**
+      // Stream the response
+      const stream = api.streamMessage(userMessage.content, filesToSend);
+      let accumulatedContent = "";
+      let currentCodeSnippets: Array<{ code: string; language: string; title?: string; collapsed: boolean }> = [];
 
-Based on the documents you've shared and your question about patient data handling compliance, here are the key steps you should follow:
+      for await (const chunk of stream) {
+        if (chunk.isComplete) break;
 
-**1. Data Collection**
-- Obtain proper patient consent before collecting any data
-- Collect only the minimum necessary data for your specific purpose
-- Use secure, encrypted methods for data collection
-- Document the legal basis for data collection
+        accumulatedContent += chunk.content;
 
-**2. Data Storage & Security**
-- Store patient data in approved, encrypted systems
-- Implement access controls with role-based permissions
-- Regularly update security protocols and software
-- Maintain audit logs of all data access
+        // Parse code snippets from content
+        const codeBlockRegex = /```(\w+)?\n([\s\S]*?)```/g;
+        const matches = [...accumulatedContent.matchAll(codeBlockRegex)];
 
-**3. Data Processing & Use**
-- Process data only for authorized purposes
-- Ensure staff are trained on data handling protocols
-- Implement data minimization principles
-- Regular security assessments and compliance checks
+        currentCodeSnippets = matches.map((match, index) => ({
+          code: match[2].trim(),
+          language: match[1] || 'text',
+          title: `Code Block ${index + 1}`,
+          collapsed: true
+        }));
 
-**4. Data Sharing & Transfer**
-- Obtain explicit consent before sharing data
-- Use secure transfer methods (encrypted channels)
-- Maintain transfer logs and recipient agreements
-- Ensure third parties meet our compliance standards
+        // Remove code blocks from display content
+        const contentWithoutCode = accumulatedContent.replace(codeBlockRegex, '[Code snippet extracted]');
 
-**5. Data Disposal**
-- Follow retention schedules as per policy
-- Use secure deletion methods for digital data
-- Physical destruction of paper records
-- Document all disposal activities
-
-The uploaded documents appear to align with these best practices. Would you like me to elaborate on any specific aspect based on your files?`;
-      } else {
-        responseContent = `Based on your question about patient data handling compliance, here are the key steps you should follow:
-
-**1. Data Collection**
-- Obtain proper patient consent before collecting any data
-- Collect only the minimum necessary data for your specific purpose
-- Use secure, encrypted methods for data collection
-- Document the legal basis for data collection
-
-**2. Data Storage & Security**
-- Store patient data in approved, encrypted systems
-- Implement access controls with role-based permissions
-- Regularly update security protocols and software
-- Maintain audit logs of all data access
-
-**3. Data Processing & Use**
-- Process data only for authorized purposes
-- Ensure staff are trained on data handling protocols
-- Implement data minimization principles
-- Regular security assessments and compliance checks
-
-**4. Data Sharing & Transfer**
-- Obtain explicit consent before sharing data
-- Use secure transfer methods (encrypted channels)
-- Maintain transfer logs and recipient agreements
-- Ensure third parties meet our compliance standards
-
-**5. Data Disposal**
-- Follow retention schedules as per policy
-- Use secure deletion methods for digital data
-- Physical destruction of paper records
-- Document all disposal activities
-
-Would you like me to elaborate on any of these steps or discuss specific compliance requirements for your department?`;
+        setMessages(prev => prev.map(msg =>
+          msg.id === assistantMessageId
+            ? {
+              ...msg,
+              content: contentWithoutCode,
+              codeSnippets: currentCodeSnippets
+            }
+            : msg
+        ));
       }
 
-      const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        type: "assistant",
-        content: responseContent,
-        timestamp: new Date(),
-      };
+      // Mark streaming as complete
+      setMessages(prev => prev.map(msg =>
+        msg.id === assistantMessageId
+          ? { ...msg, isStreaming: false }
+          : msg
+      ));
 
-      setMessages((prev) => [...prev, assistantMessage]);
+    } catch (error) {
+      console.error('Send message error:', error);
+      setMessages(prev => prev.map(msg =>
+        msg.id === assistantMessageId
+          ? {
+            ...msg,
+            content: `Error: ${error instanceof Error ? error.message : 'Failed to send message'}`,
+            isStreaming: false
+          }
+          : msg
+      ));
+    } finally {
       setIsLoading(false);
-    }, 2000);
+      setStreamingMessageId(null);
+    }
   };
 
   const handleRefresh = () => {
     setMessages([]);
-    setInputText(
-      "Upload your file (csv/xlsx) and ask a question about your data...",
-    );
+    setInputText("Upload your file (csv/xlsx) and ask a question about your data...");
     setUploadedFiles([]);
+    api.clearSession(); // Clear the backend session
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -489,23 +480,22 @@ Would you like me to elaborate on any of these steps or discuss specific complia
                                   className="bg-muted rounded-lg p-3 border"
                                 >
                                   <div className="flex items-center gap-2 mb-2">
-                                    {file.type.startsWith(
-                                      "image/",
-                                    ) ? (
+                                    {file.type.startsWith("image/") ? (
                                       <ImageIcon className="w-4 h-4 text-blue-500" />
                                     ) : (
                                       <FileText className="w-4 h-4 text-green-500" />
                                     )}
-                                    <span className="text-sm">
+                                    <span className="text-sm font-medium">
                                       {file.name}
                                     </span>
                                     <span className="text-xs text-muted-foreground">
-                                      (
-                                      {formatFileSize(
-                                        file.size,
-                                      )}
-                                      )
+                                      ({formatFileSize(file.size)})
                                     </span>
+                                    {file.rows && file.columns && (
+                                      <span className="text-xs bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 px-2 py-1 rounded">
+                                        {file.rows} × {file.columns}
+                                      </span>
+                                    )}
                                   </div>
                                   {file.type.startsWith(
                                     "image/",
@@ -529,6 +519,39 @@ Would you like me to elaborate on any of these steps or discuss specific complia
                         <div className="text-foreground whitespace-pre-wrap leading-relaxed">
                           {message.content}
                         </div>
+
+                        {/* Code snippets */}
+                        {message.codeSnippets && message.codeSnippets.length > 0 && (
+                          <div className="space-y-3 mt-3">
+                            {message.codeSnippets.map((snippet, index) => (
+                              <CodeSnippet
+                                key={index}
+                                code={snippet.code}
+                                language={snippet.language}
+                                title={snippet.title}
+                                collapsed={snippet.collapsed}
+                              />
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Streaming indicator */}
+                        {message.isStreaming && (
+                          <div className="flex items-center gap-2 mt-2 text-muted-foreground">
+                            <div className="flex space-x-1">
+                              <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce"></div>
+                              <div
+                                className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce"
+                                style={{ animationDelay: "0.1s" }}
+                              ></div>
+                              <div
+                                className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce"
+                                style={{ animationDelay: "0.2s" }}
+                              ></div>
+                            </div>
+                            <span className="text-sm">Thinking...</span>
+                          </div>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -587,6 +610,11 @@ Would you like me to elaborate on any of these steps or discuss specific complia
                       <span className="text-xs text-muted-foreground">
                         ({formatFileSize(file.size)})
                       </span>
+                      {file.rows && file.columns && (
+                        <span className="text-xs bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 px-2 py-1 rounded">
+                          {file.rows} × {file.columns}
+                        </span>
+                      )}
                       {file.analysisResult && (
                         <span className="text-xs bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300 px-2 py-1 rounded">
                           Analyzed
@@ -656,7 +684,7 @@ Would you like me to elaborate on any of these steps or discuss specific complia
           ref={fileInputRef}
           type="file"
           multiple
-          accept="image/*,.pdf,.doc,.docx,.txt"
+          accept=".csv,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv"
           onChange={handleFileChange}
           className="hidden"
         />

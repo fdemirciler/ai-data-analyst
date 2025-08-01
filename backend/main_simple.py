@@ -33,13 +33,17 @@ app = FastAPI(
     description="AI-powered data analysis and visualization platform",
     version="1.0.0",
     docs_url="/docs",
-    redoc_url="/redoc"
+    redoc_url="/redoc",
 )
 
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173"],  # React dev servers
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:5174",  # Frontend is running on this port
+    ],  # React dev servers
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -50,7 +54,7 @@ secure_executor = SecurePythonExecutor(
     execution_limits=ExecutionLimits(
         max_execution_time=60.0,  # Allow longer execution for analysis
         max_memory_mb=512,
-        max_output_size=50000
+        max_output_size=50000,
     )
 )
 
@@ -58,6 +62,7 @@ secure_executor = SecurePythonExecutor(
 active_sessions: Dict[str, Dict[str, Any]] = {}
 session_results: Dict[str, Dict[str, Any]] = {}
 uploaded_files: Dict[str, Dict[str, Any]] = {}
+
 
 # Pydantic models for API
 class SessionResponse(BaseModel):
@@ -105,11 +110,7 @@ async def health_check():
         "status": "healthy",
         "timestamp": datetime.now(),
         "version": "1.0.0",
-        "services": {
-            "fastapi": "active",
-            "security": "active",
-            "sandbox": "active"
-        }
+        "services": {"fastapi": "active", "security": "active", "sandbox": "active"},
     }
 
 
@@ -123,17 +124,17 @@ async def create_session():
             "session_id": session_id,
             "created_at": datetime.now(),
             "status": "active",
-            "last_accessed": datetime.now()
+            "last_accessed": datetime.now(),
         }
-        
+
         active_sessions[session_id] = session_data
-        
+
         logger.info(f"Created new session: {session_id}")
-        
+
         return SessionResponse(
             session_id=session_id,
             created_at=session_data["created_at"],
-            status="active"
+            status="active",
         )
     except Exception as e:
         logger.error(f"Error creating session: {e}")
@@ -146,14 +147,14 @@ async def get_session(session_id: str):
     try:
         if session_id not in active_sessions:
             raise HTTPException(status_code=404, detail="Session not found")
-        
+
         session_data = active_sessions[session_id]
         session_data["last_accessed"] = datetime.now()
-        
+
         return SessionResponse(
             session_id=session_id,
             created_at=session_data["created_at"],
-            status=session_data.get("status", "active")
+            status=session_data.get("status", "active"),
         )
     except HTTPException:
         raise
@@ -168,17 +169,17 @@ async def delete_session(session_id: str):
     try:
         if session_id not in active_sessions:
             raise HTTPException(status_code=404, detail="Session not found")
-        
+
         # Clean up all session data
         del active_sessions[session_id]
         if session_id in session_results:
             del session_results[session_id]
         if session_id in uploaded_files:
             del uploaded_files[session_id]
-        
+
         logger.info(f"Deleted session: {session_id}")
         return {"message": "Session deleted successfully"}
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -194,52 +195,88 @@ async def upload_file(session_id: str, file: UploadFile = File(...)):
         # Verify session exists
         if session_id not in active_sessions:
             raise HTTPException(status_code=404, detail="Session not found")
-        
+
         # Validate file
         if not file.filename:
             raise HTTPException(status_code=400, detail="No filename provided")
-        
+
         # Validate file type
-        allowed_extensions = {'.csv', '.xlsx', '.xls', '.json', '.parquet'}
+        allowed_extensions = {".csv", ".xlsx", ".xls", ".json", ".parquet"}
         file_extension = Path(file.filename).suffix.lower()
-        
+
         if file_extension not in allowed_extensions:
             raise HTTPException(
-                status_code=400, 
-                detail=f"File type {file_extension} not supported. Allowed: {allowed_extensions}"
+                status_code=400,
+                detail=f"File type {file_extension} not supported. Allowed: {allowed_extensions}",
             )
-        
+
         # Create upload directory if it doesn't exist
         upload_dir = Path("uploads") / session_id
         upload_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Save file
         file_path = upload_dir / file.filename
         with open(file_path, "wb") as buffer:
             content = await file.read()
             buffer.write(content)
-        
-        # Store file info
+
+        # Immediately process file to get dimensions
+        import pandas as pd
+
+        try:
+            # Load data based on file type to get dimensions
+            if file_extension == ".csv":
+                df = pd.read_csv(file_path)
+            elif file_extension in [".xlsx", ".xls"]:
+                df = pd.read_excel(file_path)
+            else:
+                # For other types, set default values
+                df = None
+
+            if df is not None and not df.empty:
+                rows, columns = df.shape
+                logger.info(
+                    f"Successfully processed file {file.filename}: {rows} rows × {columns} columns"
+                )
+            else:
+                rows, columns = 0, 0
+                logger.warning(
+                    f"File {file.filename} processed but resulted in empty dataframe"
+                )
+
+        except Exception as e:
+            logger.error(f"Error processing file dimensions for {file.filename}: {e}")
+            # Set reasonable defaults instead of 0,0 to help with debugging
+            rows, columns = -1, -1
+
+        # Store file info with dimensions
         file_info = {
             "original_filename": file.filename,
             "file_path": str(file_path),
             "file_size": len(content),
             "upload_timestamp": datetime.now(),
-            "file_type": file_extension
+            "file_type": file_extension,
+            "rows": rows,
+            "columns": columns,
         }
-        
+
         uploaded_files[session_id] = file_info
         active_sessions[session_id]["uploaded_file"] = file_info
         active_sessions[session_id]["status"] = "file_uploaded"
-        
-        logger.info(f"File uploaded for session {session_id}: {file.filename}")
-        
+
+        logger.info(
+            f"File uploaded for session {session_id}: {file.filename} ({rows} rows × {columns} columns)"
+        )
+
+        # Return response in format expected by frontend
         return {
-            "message": "File uploaded successfully",
-            "file_info": file_info,
-            "session_id": session_id
+            "filename": file.filename,
+            "rows": rows,
+            "columns": columns,
+            "file_id": f"{session_id}_{file.filename}",
+            "upload_time": datetime.now().isoformat(),
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -249,35 +286,41 @@ async def upload_file(session_id: str, file: UploadFile = File(...)):
 
 # Basic data analysis endpoint (simplified)
 @app.post("/api/sessions/{session_id}/analyze", response_model=WorkflowStatusResponse)
-async def start_analysis(session_id: str, request: AnalysisRequest, background_tasks: BackgroundTasks):
+async def start_analysis(
+    session_id: str, request: AnalysisRequest, background_tasks: BackgroundTasks
+):
     """Start basic data analysis"""
     try:
         # Verify session and file
         if session_id not in active_sessions:
             raise HTTPException(status_code=404, detail="Session not found")
-        
+
         session_data = active_sessions[session_id]
         if "uploaded_file" not in session_data:
-            raise HTTPException(status_code=400, detail="No file uploaded for this session")
-        
+            raise HTTPException(
+                status_code=400, detail="No file uploaded for this session"
+            )
+
         # Update session status
         session_data["status"] = "processing"
         session_data["analysis_type"] = request.analysis_type
         session_data["parameters"] = request.parameters
-        
+
         # Start basic analysis in background
-        background_tasks.add_task(run_basic_analysis, session_id, session_data["uploaded_file"])
-        
+        background_tasks.add_task(
+            run_basic_analysis, session_id, session_data["uploaded_file"]
+        )
+
         logger.info(f"Started basic analysis for session {session_id}")
-        
+
         return WorkflowStatusResponse(
             session_id=session_id,
             status="processing",
             current_step="analyzing",
             progress=0.0,
-            message="Basic analysis started"
+            message="Basic analysis started",
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -291,10 +334,10 @@ async def get_analysis_status(session_id: str):
     try:
         if session_id not in active_sessions:
             raise HTTPException(status_code=404, detail="Session not found")
-        
+
         session_data = active_sessions[session_id]
         status = session_data.get("status", "active")
-        
+
         # Check if analysis is complete
         if session_id in session_results:
             return WorkflowStatusResponse(
@@ -302,7 +345,7 @@ async def get_analysis_status(session_id: str):
                 status="completed",
                 current_step="finished",
                 progress=1.0,
-                message="Analysis completed successfully"
+                message="Analysis completed successfully",
             )
         elif status == "processing":
             return WorkflowStatusResponse(
@@ -310,7 +353,7 @@ async def get_analysis_status(session_id: str):
                 status="processing",
                 current_step="analyzing",
                 progress=0.5,
-                message="Analysis in progress"
+                message="Analysis in progress",
             )
         else:
             return WorkflowStatusResponse(
@@ -318,9 +361,9 @@ async def get_analysis_status(session_id: str):
                 status=status,
                 current_step="ready",
                 progress=0.0,
-                message="Ready for analysis"
+                message="Ready for analysis",
             )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -335,15 +378,17 @@ async def get_analysis_results(session_id: str):
         if session_id not in session_results:
             if session_id not in active_sessions:
                 raise HTTPException(status_code=404, detail="Session not found")
-            
+
             session_data = active_sessions[session_id]
             if session_data.get("status") == "processing":
-                raise HTTPException(status_code=202, detail="Analysis still in progress")
+                raise HTTPException(
+                    status_code=202, detail="Analysis still in progress"
+                )
             else:
                 raise HTTPException(status_code=404, detail="No results available")
-        
+
         results = session_results[session_id]
-        
+
         return AnalysisResultResponse(
             session_id=session_id,
             analysis_type=results.get("analysis_type", "basic"),
@@ -351,9 +396,9 @@ async def get_analysis_results(session_id: str):
             visualizations=results.get("visualizations", []),
             insights=results.get("insights", []),
             execution_time=results.get("execution_time", 0.0),
-            timestamp=results.get("timestamp", datetime.now())
+            timestamp=results.get("timestamp", datetime.now()),
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -369,7 +414,7 @@ async def execute_custom_code(session_id: str, request: CustomCodeRequest):
         # Verify session exists
         if session_id not in active_sessions:
             raise HTTPException(status_code=404, detail="Session not found")
-        
+
         # Get context data if available
         context_data = {}
         if session_id in session_results:
@@ -379,24 +424,57 @@ async def execute_custom_code(session_id: str, request: CustomCodeRequest):
                 context_data["df"] = results["dataframe"]
             if "analysis_results" in results:
                 context_data["analysis_results"] = results["analysis_results"]
-        
+
+        # If no dataframe is loaded but we have an uploaded file, load it now
+        if "df" not in context_data and session_id in active_sessions:
+            session_data = active_sessions[session_id]
+            if "uploaded_file" in session_data:
+                file_info = session_data["uploaded_file"]
+                try:
+                    import pandas as pd
+
+                    df = pd.read_csv(file_info["file_path"])
+                    context_data["df"] = df
+                    logger.info(
+                        f"Loaded dataframe for session {session_id}: {df.shape}"
+                    )
+                    logger.info(f"Dataframe columns: {list(df.columns)}")
+                    logger.info(f"Dataframe head: {df.head().to_string()}")
+                except Exception as e:
+                    logger.error(
+                        f"Failed to load dataframe for session {session_id}: {e}"
+                    )
+
         # Add any additional context variables
         context_data.update(request.context_variables)
-        
+
+        # Debug: log what's in context_data
+        logger.info(f"Context data keys: {list(context_data.keys())}")
+        if "df" in context_data:
+            logger.info(
+                f"DataFrame in context: {type(context_data['df'])}, shape: {context_data['df'].shape}"
+            )
+        else:
+            logger.info("No 'df' found in context_data")
+
         # Execute code securely
         execution_result = secure_executor.execute(request.code, context_data)
-        
+
         logger.info(f"Executed custom code for session {session_id}")
-        
+        logger.info(f"Execution success: {execution_result.success}")
+        logger.info(f"Execution output length: {len(execution_result.output or '')}")
+        logger.info(f"Execution output: {repr(execution_result.output)}")
+        logger.info(f"Execution error: {execution_result.error}")
+
         return {
             "session_id": session_id,
             "success": execution_result.success,
             "output": execution_result.output,
             "error": execution_result.error,
             "execution_time": execution_result.execution_time,
-            "warnings": execution_result.warnings
+            "warnings": execution_result.warnings,
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -409,21 +487,21 @@ async def run_basic_analysis(session_id: str, file_info: Dict[str, Any]):
     """Run basic data analysis in the background"""
     try:
         logger.info(f"Starting basic analysis for session {session_id}")
-        
+
         # Simulate basic data analysis
         import pandas as pd
-        
+
         file_path = file_info["file_path"]
         file_extension = Path(file_path).suffix.lower()
-        
+
         # Load data based on file type
-        if file_extension == '.csv':
+        if file_extension == ".csv":
             df = pd.read_csv(file_path)
-        elif file_extension in ['.xlsx', '.xls']:
+        elif file_extension in [".xlsx", ".xls"]:
             df = pd.read_excel(file_path)
         else:
             raise ValueError(f"Unsupported file type: {file_extension}")
-        
+
         # Basic analysis
         analysis_results = {
             "shape": df.shape,
@@ -431,16 +509,20 @@ async def run_basic_analysis(session_id: str, file_info: Dict[str, Any]):
             "dtypes": df.dtypes.to_dict(),
             "null_counts": df.isnull().sum().to_dict(),
             "memory_usage": df.memory_usage(deep=True).sum(),
-            "numeric_summary": df.describe().to_dict() if len(df.select_dtypes(include='number').columns) > 0 else {},
+            "numeric_summary": (
+                df.describe().to_dict()
+                if len(df.select_dtypes(include="number").columns) > 0
+                else {}
+            ),
         }
-        
+
         # Generate basic insights
         insights = [
             f"Dataset contains {df.shape[0]} rows and {df.shape[1]} columns",
             f"Memory usage: {analysis_results['memory_usage'] / 1024 / 1024:.2f} MB",
             f"Total missing values: {df.isnull().sum().sum()}",
         ]
-        
+
         # Store results
         session_results[session_id] = {
             "analysis_type": "basic",
@@ -449,14 +531,14 @@ async def run_basic_analysis(session_id: str, file_info: Dict[str, Any]):
             "visualizations": [],
             "insights": insights,
             "execution_time": 2.0,  # Simulated
-            "timestamp": datetime.now()
+            "timestamp": datetime.now(),
         }
-        
+
         # Update session status
         active_sessions[session_id]["status"] = "completed"
-        
+
         logger.info(f"Completed basic analysis for session {session_id}")
-        
+
     except Exception as e:
         logger.error(f"Error in basic analysis for session {session_id}: {e}")
         active_sessions[session_id]["status"] = "error"
@@ -469,12 +551,12 @@ if __name__ == "__main__":
     host = os.getenv("API_HOST", "0.0.0.0")
     port = int(os.getenv("API_PORT", "8000"))
     debug = os.getenv("DEBUG", "false").lower() == "true"
-    
+
     # Run the server
     uvicorn.run(
         "main_simple:app",
         host=host,
         port=port,
         reload=debug,
-        log_level="info" if not debug else "debug"
+        log_level="info" if not debug else "debug",
     )

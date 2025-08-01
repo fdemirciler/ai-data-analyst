@@ -1,0 +1,147 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Data Processing Schema",
+  "description": "Schema for data exchange between processing nodes in agentic AI workflow",
+  "type": "object",
+  "definitions": {
+    "file_metadata": {
+      "type": "object",
+      "properties": {
+        "filename": {"type": "string"},
+        "file_size": {"type": "integer"},
+        "file_type": {"type": "string", "enum": ["csv", "xlsx", "xls"]},
+        "upload_timestamp": {"type": "string", "format": "date-time"},
+        "processing_id": {"type": "string"},
+        "checksum": {"type": "string"}
+      },
+      "required": ["filename", "file_size", "file_type", "upload_timestamp", "processing_id"]
+    },
+    "processing_status": {
+      "type": "object",
+      "properties": {
+        "node_name": {"type": "string"},
+        "status": {"type": "string", "enum": ["started", "processing", "completed", "failed", "retrying"]},
+        "timestamp": {"type": "string", "format": "date-time"},
+        "duration_ms": {"type": "integer"},
+        "memory_usage_mb": {"type": "number"},
+        "error_count": {"type": "integer"},
+        "warning_count": {"type": "integer"}
+      }
+    },
+    "column_profile": {
+      "type": "object",
+      "properties": {
+        "name": {"type": "string"},
+        "original_name": {"type": "string"},
+        "data_type": {"type": "string"},
+        "confidence_score": {"type": "number", "minimum": 0, "maximum": 1},
+        "null_count": {"type": "integer"},
+        "unique_count": {"type": "integer"},
+        "total_count": {"type": "integer"},
+        "completeness_score": {"type": "number", "minimum": 0, "maximum": 1},
+        "uniqueness_score": {"type": "number", "minimum": 0, "maximum": 1},
+        "sample_values": {"type": "array", "items": {"type": "string"}, "maxItems": 5},
+        "statistics": {
+          "type": "object",
+          "properties": {
+            "min": {"type": ["string", "number"]},
+            "max": {"type": ["string", "number"]},
+            "mean": {"type": "number"},
+            "median": {"type": "number"},
+            "mode": {"type": ["string", "number"]},
+            "std_dev": {"type": "number"}
+          }
+        }
+      }
+    },
+    "transformation_log": {
+      "type": "object",
+      "properties": {
+        "operation": {"type": "string"},
+        "description": {"type": "string"},
+        "timestamp": {"type": "string", "format": "date-time"},
+        "affected_columns": {"type": "array", "items": {"type": "string"}},
+        "before_value": {"type": ["string", "number", "null"]},
+        "after_value": {"type": ["string", "number", "null"]},
+        "success": {"type": "boolean"},
+        "error_message": {"type": ["string", "null"]}
+      }
+    }
+  },
+  "properties": {
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "file_info": {"$ref": "#/definitions/file_metadata"},
+        "processing_chain": {
+          "type": "array",
+          "items": {"$ref": "#/definitions/processing_status"}
+        },
+        "overall_quality_score": {"type": "number", "minimum": 0, "maximum": 100},
+        "processing_started": {"type": "string", "format": "date-time"},
+        "processing_completed": {"type": "string", "format": "date-time"},
+        "total_duration_ms": {"type": "integer"}
+      }
+    },
+    "data": {
+      "type": "object",
+      "properties": {
+        "columns": {"type": "array", "items": {"$ref": "#/definitions/column_profile"}},
+        "row_count": {"type": "integer"},
+        "column_count": {"type": "integer"},
+        "processed_data_path": {"type": "string"},
+        "sample_data": {
+          "type": "array",
+          "items": {"type": "object"},
+          "maxItems": 10
+        }
+      }
+    },
+    "quality": {
+      "type": "object",
+      "properties": {
+        "completeness_score": {"type": "number"},
+        "uniqueness_score": {"type": "number"},
+        "validity_score": {"type": "number"},
+        "consistency_score": {"type": "number"},
+        "overall_score": {"type": "number"}
+      }
+    },
+    "audit": {
+      "type": "object",
+      "properties": {
+        "transformations": {
+          "type": "array",
+          "items": {"$ref": "#/definitions/transformation_log"}
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "node": {"type": "string"},
+              "error_type": {"type": "string"},
+              "message": {"type": "string"},
+              "timestamp": {"type": "string", "format": "date-time"},
+              "recovery_action": {"type": "string"},
+              "severity": {"type": "string", "enum": ["low", "medium", "high", "critical"]}
+            }
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "node": {"type": "string"},
+              "message": {"type": "string"},
+              "timestamp": {"type": "string", "format": "date-time"},
+              "suggested_action": {"type": "string"}
+            }
+          }
+        }
+      }
+    }
+  },
+  "required": ["metadata", "data", "quality", "audit"]
+}

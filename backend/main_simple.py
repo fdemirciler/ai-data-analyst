@@ -10,12 +10,17 @@ import os
 import uuid
 import asyncio
 import logging
+import re
+import sys
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 from pathlib import Path
 
+# Add the 'backend' directory to sys.path to allow for absolute imports
+sys.path.insert(0, str(Path(__file__).parent.absolute()))
+
 import uvicorn
-from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
+from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel, Field
@@ -480,6 +485,338 @@ async def execute_custom_code(session_id: str, request: CustomCodeRequest):
     except Exception as e:
         logger.error(f"Error executing custom code for session {session_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ===============================================
+# 🧠 REAL LLM INTEGRATION ENDPOINT
+# ===============================================
+
+
+@app.post("/api/sessions/{session_id}/analyze-llm")
+async def analyze_with_llm_endpoint(
+    session_id: str, query: str = Query(..., description="User's analysis question")
+):
+    """
+    🧠 REAL LLM ANALYSIS ENDPOINT
+
+    This endpoint uses real LLM integration for intelligent data analysis.
+    It generates contextual Python code based on user queries and data structure.
+    """
+    try:
+        logger.info(f"🧠 Starting REAL LLM analysis for session {session_id}")
+        logger.info(f"Query: {query}")
+
+        # Verify session exists
+        if session_id not in active_sessions:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        session_data = active_sessions[session_id]
+
+        # Check if file was uploaded
+        if "uploaded_file" not in session_data:
+            raise HTTPException(
+                status_code=400, detail="No data file uploaded for analysis"
+            )
+
+        # Get file information
+        file_info = session_data["uploaded_file"]
+        file_path = file_info["file_path"]
+
+        # Load data to understand structure
+        try:
+            if file_path.endswith(".csv"):
+                import pandas as pd
+
+                df = pd.read_csv(file_path)
+            elif file_path.endswith((".xlsx", ".xls")):
+                import pandas as pd
+
+                df = pd.read_excel(file_path)
+            else:
+                raise ValueError(f"Unsupported file type")
+
+            logger.info(f"Loaded data: {df.shape[0]} rows × {df.shape[1]} columns")
+
+        except Exception as e:
+            logger.error(f"Failed to load data: {e}")
+            raise HTTPException(
+                status_code=500, detail=f"Failed to load data: {str(e)}"
+            )
+
+        # Generate LLM-powered analysis
+        try:
+            # Import LLM components
+            from services.llm_provider import LLMManager
+            from config import settings
+
+            # Initialize LLM manager
+            llm_manager = LLMManager(settings)
+
+            # Create context-aware prompt
+            prompt = f"""You are an expert data analyst. Generate Python code to analyze the uploaded dataset and answer the user's question.
+
+DATASET INFO:
+- Filename: {file_info['filename']}
+- Shape: {df.shape[0]} rows × {df.shape[1]} columns
+- Columns: {list(df.columns)}
+- Data types: {dict(df.dtypes)}
+
+SAMPLE DATA (first 3 rows):
+{df.head(3).to_string()}
+
+USER QUERY: "{query}"
+
+Generate Python code that:
+1. Analyzes the data to answer the user's question
+2. Uses pandas for data manipulation
+3. Creates appropriate visualizations if helpful using matplotlib/seaborn
+4. Provides clear, interpretable results
+5. The data is already loaded as 'df'
+
+Respond with only the Python code in this format:
+```python
+# Analysis code here
+```
+
+Then provide a brief explanation of what the code does."""
+
+            logger.debug("Generating code with LLM...")
+            llm_response = await llm_manager.generate(
+                prompt, provider="gemini", temperature=0.1, max_tokens=2000
+            )
+
+            # Extract code from response
+            import re
+
+            code_match = re.search(
+                r"```python\s*(.*?)\s*```", llm_response.content, re.DOTALL
+            )
+            if code_match:
+                generated_code = code_match.group(1).strip()
+            else:
+                generated_code = llm_response.content.strip()
+
+            logger.info(f"Generated code length: {len(generated_code)} chars")
+            logger.debug(f"Generated code:\n---\n{generated_code}\n---")
+
+            # Execute the generated code
+            context_data = {"df": df}
+            execution_result = secure_executor.execute(generated_code, context_data)
+
+            logger.info(
+                f"LLM-generated code executed. Success: {execution_result.success}"
+            )
+            if not execution_result.success:
+                logger.error(f"Execution error: {execution_result.error}")
+
+            # Prepare response
+            response = {
+                "success": execution_result.success,
+                "session_id": session_id,
+                "query": query,
+                "analysis_id": str(uuid.uuid4()),
+                "generated_code": generated_code,
+                "code_explanation": "LLM-generated analysis code",
+                "execution_output": execution_result.output,
+                "execution_error": execution_result.error,
+                "processing_time": execution_result.execution_time,
+                "timestamp": datetime.now().isoformat(),
+                "retry_count": 0,
+                "visualizations": [],
+                "analysis_type": "llm",
+            }
+
+            if execution_result.success:
+                response["interpretation"] = (
+                    f"Successfully analyzed your data. {execution_result.output}"
+                )
+            else:
+                response["interpretation"] = (
+                    f"Analysis encountered an issue: {execution_result.error}"
+                )
+
+            # Add response elements for frontend
+            response_elements = []
+
+            if generated_code:
+                response_elements.append(
+                    {
+                        "type": "code",
+                        "content": generated_code,
+                        "title": "Generated Analysis Code",
+                        "explanation": "AI-generated code to answer your question",
+                    }
+                )
+
+            if execution_result.output:
+                response_elements.append(
+                    {
+                        "type": "output",
+                        "content": execution_result.output,
+                        "title": "Analysis Results",
+                    }
+                )
+
+            if execution_result.error:
+                response_elements.append(
+                    {
+                        "type": "error",
+                        "content": execution_result.error,
+                        "title": "Execution Error",
+                    }
+                )
+
+            response["response_elements"] = response_elements
+
+            logger.info(f"✅ LLM analysis completed: success={response['success']}")
+            return response
+
+        except ImportError as e:
+            logger.warning(
+                f"LLM components not available, falling back to rule-based analysis. Error: {e}"
+            )
+            # Fallback to rule-based generation
+            return await _fallback_analysis(session_id, query, df, file_info)
+
+        except Exception as e:
+            logger.error(
+                f"LLM analysis failed, falling back to rule-based analysis. Error: {e}"
+            )
+            # Fallback to rule-based generation
+            return await _fallback_analysis(session_id, query, df, file_info)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"💥 Error in LLM analysis for session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"LLM analysis failed: {str(e)}")
+
+
+async def _fallback_analysis(
+    session_id: str, query: str, df, file_info: Dict[str, Any]
+):
+    """Fallback analysis when LLM is not available"""
+    logger.info("Using fallback analysis (LLM not available)")
+
+    query_lower = query.lower()
+    df.columns = [col.lower() for col in df.columns]  # Normalize column names
+
+    # Generate appropriate code based on query
+    if "average" in query_lower and "department" in query_lower:
+        code = """
+# Calculate average salary per department
+if 'department' in df.columns and any('salary' in col for col in df.columns):
+    # Find salary column
+    salary_col = next(col for col in df.columns if 'salary' in col)
+    avg_by_dept = df.groupby('department')[salary_col].mean().sort_values(ascending=False)
+    
+    print("Average Salary by Department:")
+    print("=" * 30)
+    for dept, avg_salary in avg_by_dept.items():
+        print(f"{dept}: ${avg_salary:,.2f}")
+    
+    # Create visualization
+    import matplotlib.pyplot as plt
+    plt.figure(figsize=(10, 6))
+    avg_by_dept.plot(kind='bar')
+    plt.title(f'Average {salary_col.title()} by Department')
+    plt.xlabel('Department')
+    plt.ylabel(f'Average {salary_col.title()}')
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.show()
+else:
+    print("Could not find 'department' and 'salary' columns after normalization.")
+    print("Available columns:", list(df.columns))
+"""
+
+    elif "summary" in query_lower or "overview" in query_lower:
+        code = """
+# Data overview and summary
+print("=== DATASET OVERVIEW ===")
+print(f"Shape: {df.shape[0]} rows × {df.shape[1]} columns")
+print(f"Columns: {list(df.columns)}")
+
+print("\\n=== DATA TYPES ===")
+print(df.dtypes)
+
+print("\\n=== MISSING VALUES ===")
+missing = df.isnull().sum()
+if missing.sum() > 0:
+    print("Missing values per column:")
+    for col, count in missing[missing > 0].items():
+        print(f"  {col}: {count} ({count/len(df)*100:.1f}%)")
+else:
+    print("✅ No missing values found!")
+
+print("\\n=== SAMPLE DATA ===")
+print("First 5 rows:")
+print(df.head())
+
+print("\\n=== SUMMARY STATISTICS ===")
+numeric_cols = df.select_dtypes(include=['number']).columns
+if len(numeric_cols) > 0:
+    print("Numeric columns summary:")
+    print(df[numeric_cols].describe())
+"""
+    else:
+        code = f"""
+# Basic analysis for: {query}
+print("=== ANALYSIS RESULTS ===")
+print(f"Dataset shape: {{df.shape[0]}} rows × {{df.shape[1]}} columns")
+print(f"Columns: {{list(df.columns)}}")
+
+# Show basic statistics
+numeric_cols = df.select_dtypes(include=['number']).columns
+if len(numeric_cols) > 0:
+    print("\\nNumeric columns summary:")
+    print(df[numeric_cols].describe())
+    
+categorical_cols = df.select_dtypes(include=['object']).columns
+if len(categorical_cols) > 0:
+    print("\\nCategorical columns:")
+    for col in categorical_cols[:3]:
+        print(f"\\n{{col}} value counts:")
+        print(df[col].value_counts().head())
+"""
+
+    # Execute the code
+    context_data = {"df": df}
+    execution_result = secure_executor.execute(code, context_data)
+
+    # Return response
+    return {
+        "success": execution_result.success,
+        "session_id": session_id,
+        "query": query,
+        "analysis_id": str(uuid.uuid4()),
+        "generated_code": code,
+        "code_explanation": "Rule-based analysis code (LLM fallback)",
+        "execution_output": execution_result.output,
+        "execution_error": execution_result.error,
+        "processing_time": execution_result.execution_time,
+        "timestamp": datetime.now().isoformat(),
+        "retry_count": 0,
+        "visualizations": [],
+        "interpretation": (
+            execution_result.output
+            if execution_result.success
+            else f"Analysis failed: {execution_result.error}"
+        ),
+        "response_elements": [
+            {
+                "type": "code",
+                "content": code,
+                "title": "Generated Analysis Code",
+                "explanation": "Fallback analysis code",
+            },
+            {
+                "type": "output",
+                "content": execution_result.output,
+                "title": "Analysis Results",
+            },
+        ],
+    }
 
 
 # Background analysis function

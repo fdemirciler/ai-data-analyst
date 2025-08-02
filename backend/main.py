@@ -21,13 +21,21 @@ from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel, Field
 
 # Import our workflow and services
-from workflow.main import WorkflowOrchestrator
+# from workflow.main import WorkflowOrchestrator
 from workflow.state import WorkflowState  # Import state separately
 from services.session_manager import SessionManager
 from services.file_handler import FileHandler
-from models.session import DataMetadata, SessionData
+
+# from models.session import DataMetadata, SessionData
 from security import SecurePythonExecutor, ExecutionLimits
 from config.settings import get_settings
+
+# Import LLM endpoints
+from api.llm_endpoints import (
+    analyze_with_llm,
+    AnalysisRequest as LLMAnalysisRequest,
+    AnalysisResponse as LLMAnalysisResponse,
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -58,7 +66,7 @@ app.add_middleware(
 settings = get_settings()
 session_manager = SessionManager()
 file_handler = FileHandler()
-workflow_orchestrator = WorkflowOrchestrator()
+# workflow_orchestrator = WorkflowOrchestrator()
 
 # Secure code executor for custom analysis
 secure_executor = SecurePythonExecutor(
@@ -361,6 +369,46 @@ async def get_analysis_results(session_id: str):
         raise
     except Exception as e:
         logger.error(f"Error getting results for session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Import LLM endpoints
+from api.llm_endpoints import (
+    analyze_with_llm,
+    AnalysisRequest as LLMAnalysisRequest,
+    AnalysisResponse as LLMAnalysisResponse,
+)
+
+
+# LLM Analysis endpoint - THE REAL AI INTEGRATION
+@app.post("/api/sessions/{session_id}/analyze-llm", response_model=LLMAnalysisResponse)
+async def analyze_with_llm_endpoint(session_id: str, query: str):
+    """
+    Analyze data using real LLM integration (replaces fake AI)
+
+    This endpoint uses your sophisticated LLM infrastructure:
+    - LangGraph workflow orchestration
+    - Real LLM providers (Gemini, OpenRouter, Together.ai)
+    - Code generation, execution, and interpretation
+    - Context-aware analysis with conversation history
+    """
+    try:
+        request = LLMAnalysisRequest(
+            query=query, session_id=session_id, stream=False, max_retries=2
+        )
+
+        # Use the real LLM analysis service
+        response = await analyze_with_llm(request)
+
+        logger.info(
+            f"LLM analysis completed for session {session_id}: success={response.success}"
+        )
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in LLM analysis for session {session_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

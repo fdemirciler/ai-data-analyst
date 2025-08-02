@@ -22,6 +22,12 @@ from .sandbox import (
     execute_python_code_safely,
 )
 
+from .resource_manager import (
+    ResourceManager,
+    ResourceUsage,
+    create_resource_manager,
+)
+
 __all__ = [
     # Code validation
     "CodeValidator",
@@ -35,4 +41,8 @@ __all__ = [
     "ExecutionLimits",
     "ExecutionResult",
     "execute_python_code_safely",
+    # Resource management
+    "ResourceManager",
+    "ResourceUsage",
+    "create_resource_manager",
 ]

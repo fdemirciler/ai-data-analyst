@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <title>API Fixes Test</title>
+</head>
+
+<body>
+  <h2>API Fixes Test</h2>
+  <div id="results"></div>
+
+  <script>
+    const API_BASE = 'http://localhost:8000';
+    const resultsDiv = document.getElementById('results');
+
+    async function log(message, isError = false) {
+      console.log(message);
+      const style = isError ? 'color: red' : 'color: black';
+      resultsDiv.innerHTML += `<p style="${style}">${message}</p>`;
+    }
+
+    async function testFixedAPI() {
+      try {
+        // Test 1: Create session
+        await log('🔧 Testing Fix #1 & #2: Error handling & Request structure...');
+
+        const sessionResponse = await fetch(API_BASE + '/api/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        });
+        const sessionData = await sessionResponse.json();
+        await log('✅ Session created: ' + sessionData.session_id);
+
+        // Test 2: File upload
+        const csvContent = `Name,Age,Salary,Department
+John Smith,28,65000,Engineering
+Sarah Johnson,32,72000,Marketing`;
+
+        const blob = new Blob([csvContent], { type: 'text/csv' });
+        const file = new File([blob], 'test.csv', { type: 'text/csv' });
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const uploadResponse = await fetch(API_BASE + '/api/sessions/' + sessionData.session_id + '/upload', {
+          method: 'POST',
+          body: formData
+        });
+        const uploadData = await uploadResponse.json();
+        await log('✅ File uploaded: ' + uploadData.filename);
+
+        // Test 3: Code execution with CORRECT request structure
+        await log('🔧 Testing FIXED code execution...');
+        const executeResponse = await fetch(API_BASE + '/api/sessions/' + sessionData.session_id + '/execute', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            session_id: sessionData.session_id,  // FIXED: Now including session_id
+            code: 'print("Hello from fixed API!")\nprint("Data shape:", df.shape)',
+            context_variables: {}  // FIXED: Now including context_variables
+          })
+        });
+
+        if (executeResponse.ok) {
+          const executeData = await executeResponse.json();
+          await log('✅ Code executed successfully!');
+          await log('📋 Output: ' + executeData.output);
+          await log('⏱️ Execution time: ' + executeData.execution_time + 's');
+        } else {
+          const errorData = await executeResponse.json().catch(() => ({}));
+          const errorMessage = typeof errorData.detail === 'string'
+            ? errorData.detail
+            : (errorData.detail && typeof errorData.detail === 'object'
+              ? JSON.stringify(errorData.detail)
+              : errorData.message || `Execution failed: ${executeResponse.statusText}`);
+          await log('❌ Execution failed: ' + errorMessage, true);
+        }
+
+        await log('🎉 All fixes tested successfully!');
+
+      } catch (error) {
+        await log('❌ Test error: ' + error.message, true);
+      }
+    }
+
+    // Run tests
+    testFixedAPI();
+  </script>
+</body>
+
+</html>

@@ -31,6 +31,7 @@ except ImportError:
     HAS_RESOURCE = False
 
 from .code_validator import CodeValidator, ValidationLevel, ValidationResult
+from .resource_manager import ResourceManager, create_resource_manager, ResourceUsage
 
 logger = logging.getLogger(__name__)
 
@@ -98,11 +99,22 @@ class SandboxEnvironment:
         self.limits = limits or ExecutionLimits()
         self.validator = CodeValidator(ValidationLevel.MODERATE)
 
+        # Create resource manager for cross-platform resource limits
+        self.resource_manager: ResourceManager = create_resource_manager()
+
         # Prepare restricted builtins
         self.safe_builtins = self._create_safe_builtins()
 
         # Create safe globals environment
         self.safe_globals = self._create_safe_globals()
+
+    def __del__(self):
+        """Cleanup resource manager on destruction"""
+        try:
+            if hasattr(self, "resource_manager"):
+                self.resource_manager.cleanup()
+        except:
+            pass
 
     def execute_code(
         self, code: str, globals_dict: Optional[Dict[str, Any]] = None
@@ -169,14 +181,27 @@ class SandboxEnvironment:
             # Set up resource limits
             self._set_resource_limits()
 
+            # Start resource monitoring
+            self.resource_manager.start_monitoring()
+
             # Execute with timeout and output capture
             result = self._execute_with_limits(
                 code_to_execute, exec_globals, exec_locals
             )
 
+            # Stop resource monitoring
+            self.resource_manager.stop_monitoring()
+
             # Calculate execution time
             execution_time = time.time() - start_time
             result.execution_time = execution_time
+
+            # Get final resource usage if available
+            final_usage = self.resource_manager.get_current_usage()
+            if final_usage:
+                result.memory_used = int(
+                    final_usage.memory_mb * 1024 * 1024
+                )  # Convert back to bytes
 
             # Include safe globals in result for inspection
             result.globals_after = {
@@ -188,6 +213,12 @@ class SandboxEnvironment:
             return result
 
         except Exception as e:
+            # Stop resource monitoring in case of exception
+            try:
+                self.resource_manager.stop_monitoring()
+            except:
+                pass
+
             execution_time = time.time() - start_time
             logger.error(f"Sandbox execution error: {e}")
             return ExecutionResult(
@@ -330,6 +361,8 @@ class SandboxEnvironment:
             "any",
             # Output (controlled)
             "print",
+            # Import mechanism (controlled)
+            "__import__",
         }
 
         # Import builtins module to access builtin functions properly
@@ -412,28 +445,47 @@ class SandboxEnvironment:
         return safe_globals
 
     def _set_resource_limits(self) -> None:
-        """Set resource limits for the process"""
-        if not HAS_RESOURCE:
-            logger.warning("Resource limits not available on this platform (Windows)")
-            return
-
+        """Set resource limits using cross-platform resource manager"""
         try:
-            # Note: resource module limitations vary by platform
-            # This will work on Unix-like systems, but not Windows
-            if hasattr(resource, "setrlimit") and hasattr(resource, "RLIMIT_AS"):
-                # Set memory limit (soft limit)
-                memory_limit = (
-                    self.limits.max_memory_mb * 1024 * 1024
-                )  # Convert to bytes
-                resource.setrlimit(resource.RLIMIT_AS, (memory_limit, memory_limit))  # type: ignore
+            # Set memory limit
+            if self.limits.max_memory_mb > 0:
+                success = self.resource_manager.set_memory_limit(
+                    self.limits.max_memory_mb
+                )
+                if not success:
+                    logger.warning(
+                        f"Failed to set memory limit to {self.limits.max_memory_mb}MB"
+                    )
 
-            if hasattr(resource, "setrlimit") and hasattr(resource, "RLIMIT_CPU"):
-                # Set CPU time limit
-                cpu_limit = int(self.limits.max_cpu_time)
-                resource.setrlimit(resource.RLIMIT_CPU, (cpu_limit, cpu_limit))  # type: ignore
+            # Set CPU time limit
+            if self.limits.max_cpu_time > 0:
+                success = self.resource_manager.set_cpu_limit(self.limits.max_cpu_time)
+                if not success:
+                    logger.warning(
+                        f"Failed to set CPU time limit to {self.limits.max_cpu_time}s"
+                    )
 
-        except (OSError, ValueError, AttributeError) as e:
-            logger.warning(f"Could not set resource limits: {e}")
+            # Configure violation callback for Windows resource manager
+            from .resource_manager import WindowsResourceManager
+
+            if isinstance(self.resource_manager, WindowsResourceManager):
+                self.resource_manager.set_violation_callback(
+                    self._handle_resource_violation
+                )
+
+        except Exception as e:
+            logger.error(f"Error setting resource limits: {e}")
+
+    def _handle_resource_violation(
+        self, violation_type: str, usage: ResourceUsage
+    ) -> None:
+        """Handle resource limit violations"""
+        logger.error(
+            f"Resource violation detected: {violation_type}. "
+            f"Usage: {usage.memory_mb:.1f}MB, {usage.execution_time:.1f}s"
+        )
+        # This callback is called from the resource manager when limits are exceeded
+        # The resource manager will handle process termination
 
     def _is_safe_value(self, key: str, value: Any) -> bool:
         """Check if a key-value pair is safe to include in results"""

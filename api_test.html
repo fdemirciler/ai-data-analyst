@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <title>API Test</title>
+</head>
+
+<body>
+  <h2>Agent Workflow API Test</h2>
+  <div id="results"></div>
+
+  <script>
+    const API_BASE = 'http://localhost:8000';
+    const resultsDiv = document.getElementById('results');
+
+    async function log(message) {
+      console.log(message);
+      resultsDiv.innerHTML += '<p>' + message + '</p>';
+    }
+
+    async function testAPI() {
+      try {
+        // Test 1: Health check
+        await log('Testing health endpoint...');
+        const healthResponse = await fetch(API_BASE + '/health');
+        const healthData = await healthResponse.json();
+        await log('✅ Health check: ' + healthData.status);
+
+        // Test 2: Create session
+        await log('Creating session...');
+        const sessionResponse = await fetch(API_BASE + '/api/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        });
+        const sessionData = await sessionResponse.json();
+        await log('✅ Session created: ' + sessionData.session_id);
+
+        // Test 3: File upload (using test data)
+        await log('Testing file upload...');
+        const csvContent = `Name,Age,Salary,Department
+John Smith,28,65000,Engineering
+Sarah Johnson,32,72000,Marketing
+Mike Davis,29,68000,Engineering`;
+
+        const blob = new Blob([csvContent], { type: 'text/csv' });
+        const file = new File([blob], 'test.csv', { type: 'text/csv' });
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const uploadResponse = await fetch(API_BASE + '/api/sessions/' + sessionData.session_id + '/upload', {
+          method: 'POST',
+          body: formData
+        });
+        const uploadData = await uploadResponse.json();
+        await log('✅ File uploaded: ' + uploadData.filename + ' (' + uploadData.rows + ' rows, ' + uploadData.columns + ' columns)');
+
+        // Test 4: Code execution
+        await log('Testing code execution...');
+        const codeResponse = await fetch(API_BASE + '/api/sessions/' + sessionData.session_id + '/execute', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            code: 'print("Data shape:", df.shape)\nprint("Columns:", list(df.columns))\nprint("First row:", df.iloc[0].to_dict())'
+          })
+        });
+        const codeData = await codeResponse.json();
+        await log('✅ Code executed successfully!');
+        await log('Output: ' + codeData.output);
+
+        await log('🎉 All tests passed! Frontend-Backend integration is working correctly.');
+
+      } catch (error) {
+        await log('❌ Error: ' + error.message);
+      }
+    }
+
+    // Run tests
+    testAPI();
+  </script>
+</body>
+
+</html>

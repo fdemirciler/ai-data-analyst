@@ -364,3 +364,6 @@ config.json
 # *.xls
 # *.json
 # *.parquet
+
+
+project_brief.txt

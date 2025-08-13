@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+pydantic
+python-dotenv
+python-multipart
+pandas
+numpy
+pyarrow
+langgraph
+google-generativeai
+docker
+orjson
+pytest
+websockets

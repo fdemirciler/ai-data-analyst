@@ -1,0 +1,24 @@
+we will build agentic data analysis workflow to answer user prompt by analyzing user uploaded file. This is a personal project for practice. We aim for simplicity, flexibility and robustness.
+
+This is how workflow works:
+
+- user uploads a file (csv, excel) and ask a question in a chat interface.
+- data processing node processes the file by cleaning, normalizing data, creating profiling (metadata), creating sample data and also cleaned whole data (as dataframe)
+- orchestrator sends a json including metadata, sample data and also user prompt.
+- LLM model understands user intent and creates a python script to run data analysis. it will use json data to decide which data (columns and metrics) to be used in data analysis.
+- It sends script to orchestrator to be run in a sandbox (docker). Script will be run on cleaned whole dataframe (already prepared data processing node and stored in memory).
+- script output will sent by orchestrator to LLM Model to interpret the result and responding to the user in chat conversation.
+- if user ask a follow-up question, above cycle will be repeated.
+
+Components and tech stack:
+
+- I have already built data processing component and frontend. Backend needs to be built and get connected to these components.DO NOT change anything that affects visualy look of the chat interface. 
+
+- we will use langgraph for agent orchestration.
+- LLM generated script will be run in docker for isolation. 
+- data governance will be moderate. we do not need enterprise grade implementation.
+- session management will be in memory. that means session will begin with user uploading file and ends with user resfreshing the page.
+- .env file is already available with real API keys. we will use gemini as provider and gemini-2.5-flash as the model.
+
+now review the whole codebase and make a detailed plan and to do list to build this app. ask me questions if you need clarificications. do not start coding untill i approve.
+

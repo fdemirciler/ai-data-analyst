@@ -1,0 +1,27 @@
+# Frontent/fly.toml
+
+app = 'frontent'
+primary_region = 'ams'
+
+# This section tells Fly.io how to build your app.
+# We're adding an argument to pass the backend URL to the build process.
+[build]
+  [build.args]
+    VITE_API_BASE_URL = "https://ai-dataanalyst.fly.dev"
+
+# This section sets environment variables for your running app.
+[env]
+  VITE_API_BASE_URL = "https://ai-dataanalyst.fly.dev"
+
+[http_service]
+  internal_port = 80
+  force_https = true
+  auto_stop_machines = true # Changed from 'stop' to the boolean value true
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
+
+[[vm]]
+  memory = '1gb'
+  cpu_kind = 'shared'
+  cpus = 1

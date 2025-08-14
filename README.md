@@ -1,6 +1,6 @@
 # AI Analyst Agent - Multi-Stage Data Analysis Platform
 
-A sophisticated full-stack application that provides AI-powered data analysis through an intuitive chat interface. The system combines a FastAPI backend with a modern React frontend to deliver real-time, interactive data insights.
+A full-stack application that provides AI-powered data analysis through an intuitive chat interface. The system combines a FastAPI backend with a modern React frontend to deliver real-time, interactive data insights.
 
 ## 🎯 Overview
 

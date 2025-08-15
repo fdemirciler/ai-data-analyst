@@ -13,3 +13,4 @@ orjson
 pytest
 websockets
 together
+redis

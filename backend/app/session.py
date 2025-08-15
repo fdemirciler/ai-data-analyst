@@ -6,6 +6,10 @@ from typing import Any, Dict, List
 import uuid
 import threading
 import time
+import orjson
+import redis
+
+from .config import settings
 
 
 @dataclass
@@ -92,5 +96,165 @@ class SessionStore:
         session.artifacts.append(artifact)
         return len(session.artifacts) - 1
 
+    def message_count(self, session_id: str) -> int:
+        session = self.get(session_id)
+        return len(session.messages) if session else 0
 
-session_store = SessionStore()
+
+class RedisSessionStore:
+    """Redis-backed session store keeping API parity with SessionStore.
+
+    Keys (with prefix):
+      {prefix}:sess:{id}:meta       -> HSET fields: session_id, file_id, created_at, data_path, payload(JSON)
+      {prefix}:sess:{id}:messages   -> RPUSH JSON message objects
+      {prefix}:sess:{id}:artifacts  -> RPUSH JSON artifact objects
+
+    TTL: Fixed from creation. On each push, align lists' TTL to meta's remaining TTL.
+    """
+
+    def __init__(self, redis_client: redis.Redis, ttl_seconds: int | None, key_prefix: str = "ai-da"):
+        self._r = redis_client
+        self._ttl = ttl_seconds
+        self._prefix = key_prefix.strip() if key_prefix else "ai-da"
+
+    # Key helpers
+    def _k_meta(self, sid: str) -> str:
+        return f"{self._prefix}:sess:{sid}:meta"
+
+    def _k_msgs(self, sid: str) -> str:
+        return f"{self._prefix}:sess:{sid}:messages"
+
+    def _k_art(self, sid: str) -> str:
+        return f"{self._prefix}:sess:{sid}:artifacts"
+
+    @staticmethod
+    def _dumps(obj: Any) -> str:
+        return orjson.dumps(obj).decode("utf-8")
+
+    @staticmethod
+    def _loads(s: str) -> Any:
+        return orjson.loads(s)
+
+    def _align_list_ttls(self, sid: str) -> None:
+        meta = self._k_meta(sid)
+        pttl = self._r.pttl(meta)
+        # If meta has TTL, align lists
+        if isinstance(pttl, int) and pttl > 0:
+            pipe = self._r.pipeline()
+            pipe.pexpire(self._k_msgs(sid), pttl)
+            pipe.pexpire(self._k_art(sid), pttl)
+            pipe.execute()
+
+    def create(self, payload: Dict[str, Any], data_path: Path) -> Session:
+        now = time.time()
+        session_id = str(uuid.uuid4())
+        file_id = session_id
+        meta_key = self._k_meta(session_id)
+        pipe = self._r.pipeline()
+        pipe.hset(
+            meta_key,
+            mapping={
+                "session_id": session_id,
+                "file_id": file_id,
+                "created_at": str(now),
+                "data_path": str(data_path),
+                "payload": self._dumps(payload),
+            },
+        )
+        if self._ttl and self._ttl > 0:
+            pipe.expire(meta_key, int(self._ttl))
+        pipe.execute()
+        # Align list TTLs to meta (will be effective after first push too)
+        self._align_list_ttls(session_id)
+        return Session(
+            session_id=session_id,
+            file_id=file_id,
+            created_at=now,
+            payload=payload,
+            data_path=data_path,
+        )
+
+    def get(self, session_id: str) -> Session | None:
+        meta_key = self._k_meta(session_id)
+        meta = self._r.hgetall(meta_key)
+        if not meta:
+            return None
+        try:
+            created_at = float(meta.get("created_at", "0"))
+            data_path = Path(meta.get("data_path", ""))
+            payload = self._loads(meta.get("payload", "{}"))
+        except Exception:
+            return None
+
+        # Load artifacts for compatibility with list_artifacts route
+        arts_raw = self._r.lrange(self._k_art(session_id), 0, -1)
+        artifacts: List[Dict[str, Any]] = []
+        for a in arts_raw:
+            try:
+                artifacts.append(self._loads(a))
+            except Exception:
+                continue
+
+        return Session(
+            session_id=session_id,
+            file_id=meta.get("file_id", session_id),
+            created_at=created_at,
+            payload=payload,
+            data_path=data_path,
+            messages=[],  # intentionally not loading messages list
+            artifacts=artifacts,
+        )
+
+    def add_message(
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        extra: Dict[str, Any] | None = None,
+    ) -> None:
+        msg = {"role": role, "content": content}
+        if extra:
+            msg.update(extra)
+        self._r.rpush(self._k_msgs(session_id), self._dumps(msg))
+        self._align_list_ttls(session_id)
+
+    def replace_dataset(
+        self, session_id: str, payload: Dict[str, Any], data_path: Path
+    ) -> Session | None:
+        meta_key = self._k_meta(session_id)
+        if not self._r.exists(meta_key):
+            return None
+        mapping = {
+            "payload": self._dumps(payload),
+            "data_path": str(data_path),
+        }
+        self._r.hset(meta_key, mapping=mapping)
+        return self.get(session_id)
+
+    def add_artifact(self, session_id: str, artifact: Dict[str, Any]) -> int:
+        new_len = self._r.rpush(self._k_art(session_id), self._dumps(artifact))
+        self._align_list_ttls(session_id)
+        return max(0, int(new_len) - 1)
+
+    def message_count(self, session_id: str) -> int:
+        return int(self._r.llen(self._k_msgs(session_id)))
+
+
+# Select session backend
+if settings.enable_redis_sessions:
+    # Initialize Redis client and verify connectivity
+    _client = redis.Redis.from_url(
+        settings.redis_url,
+        decode_responses=True,
+        socket_connect_timeout=2,
+        socket_timeout=2,
+    )
+    try:
+        _client.ping()
+    except Exception as e:  # fail fast in Redis mode
+        raise RuntimeError(f"Redis not reachable: {e}")
+    session_store = RedisSessionStore(
+        _client, ttl_seconds=settings.session_ttl_seconds, key_prefix=settings.redis_key_prefix
+    )
+else:
+    session_store = SessionStore(ttl_seconds=settings.session_ttl_seconds)

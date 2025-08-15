@@ -10,6 +10,11 @@ class Settings(BaseModel):
     environment: str = "dev"
     enable_llm: bool = True
     enable_docker_sandbox: bool = False
+    # Session backend
+    enable_redis_sessions: bool = False
+    redis_url: str = "redis://localhost:6379/0"
+    session_ttl_seconds: int | None = 86400
+    redis_key_prefix: str = "ai-da"
 
     # LLM Provider: 'google' or 'together'
     llm_provider: str = "google"
@@ -59,6 +64,15 @@ def load_settings() -> Settings:
     # Support alternate env name for Google Generative AI
     gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
+    # Parse optional TTL
+    ttl_raw = os.getenv("SESSION_TTL_SECONDS", "86400")
+    ttl_val: int | None
+    try:
+        ttl_int = int(ttl_raw)
+        ttl_val = ttl_int if ttl_int > 0 else None
+    except Exception:
+        ttl_val = None
+
     return Settings(
         environment=os.getenv("ENV", "dev"),
         enable_llm=_env_bool("ENABLE_LLM", True),
@@ -67,6 +81,10 @@ def load_settings() -> Settings:
             "ENABLE_DOCKER_SANDBOX",
             _env_bool("SANDBOX_ENABLED", False),
         ),
+        enable_redis_sessions=_env_bool("ENABLE_REDIS_SESSIONS", False),
+        redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+        session_ttl_seconds=ttl_val,
+        redis_key_prefix=os.getenv("REDIS_KEY_PREFIX", "ai-da"),
         llm_provider=os.getenv("LLM_PROVIDER", "google"),
         gemini_api_key=gemini_key,
         gemini_model=os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),

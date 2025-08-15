@@ -62,7 +62,7 @@ async def chat(req: ChatRequest):
         extra={"artifact_index": idx},
     )
     return ChatResponse(
-        id=str(len(session.messages)),
+        id=str(session_store.message_count(req.sessionId)),
         content=assistant_text,
         sessionId=req.sessionId,
         progress=progress,
@@ -170,7 +170,7 @@ async def chat_ws(websocket: WebSocket):
                 {
                     "type": "done",
                     "value": {
-                        "id": str(len(session.messages)),
+                        "id": str(session_store.message_count(session_id)),
                         "content": final_answer,
                         "sessionId": session_id,
                     },
@@ -265,7 +265,7 @@ async def chat_ws(websocket: WebSocket):
             {
                 "type": "done",
                 "value": {
-                    "id": str(len(session.messages)),
+                    "id": str(session_store.message_count(session_id)),
                     "content": final_answer,
                     "sessionId": session_id,
                     "artifactIndex": idx,

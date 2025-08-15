@@ -16,11 +16,11 @@ class Settings(BaseModel):
 
     # Google Gemini Settings
     gemini_api_key: str | None = None
-    gemini_model: str = "gemini-1.5-flash"
+    gemini_model: str = "gemini-2.5-flash"
 
     # Together.ai Settings
     together_api_key: str | None = None
-    together_model: str = "meta-llama/Llama-3.1-70B-Instruct-Turbo"
+    together_model: str = "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free"
 
     # File Uploads
     max_upload_mb: int = 50

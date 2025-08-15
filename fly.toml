@@ -5,8 +5,12 @@ primary_region = 'ams'
 
 [build]
 
-# This was [http_service] before, now we use [services] for more control
+# This section tells Fly to forward traffic from its edge (ports 80/443)
+# to port 8000 inside your application's VM.
 [services]
+  internal_port = 8000 # This was the missing line
+  protocol = "tcp"
+
   [[services.ports]]
     port = 80
     handlers = ["http"]

@@ -44,7 +44,7 @@ The AI Analyst Agent is an intelligent data analysis platform that allows users 
 1. **Clone and Navigate**
    ```powershell
    git clone <repository-url>
-   cd Agent_Workflow_ChatGPT5\backend
+   cd Agent_Data_Analyst\backend
    ```
 
 2. **Install Dependencies**
@@ -61,14 +61,20 @@ The AI Analyst Agent is an intelligent data analysis platform that allows users 
    
    # Configuration
    LLM_PROVIDER=google  # or "together"
-   GEMINI_MODEL=gemini-1.5-flash
-   TOGETHER_MODEL=meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo
+   GEMINI_MODEL=gemini-2.5-flash
+   TOGETHER_MODEL=meta-llama/Llama-3.3-70B-Instruct-Turbo-Free
    ENABLE_LLM=true
+   
+   # Redis Sessions (optional)
+   ENABLE_REDIS_SESSIONS=false  # set to true to enable Redis
+   REDIS_URL=redis://localhost:6379/0
+   SESSION_TTL_SECONDS=86400  # 24 hours
+   REDIS_KEY_PREFIX=ai-da
    ```
 
 4. **Start Backend Server**
    ```powershell
-   python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+   python backend/run_server.py
    ```
 
 ### Frontend Setup
@@ -147,8 +153,9 @@ WS /api/ws/chat
 - **WebSockets**: Real-time communication
 - **Pandas**: Data manipulation and analysis
 - **Docker**: Secure code execution sandbox
-- **Google Gemini**: Advanced LLM for code generation
-- **Together.ai**: Alternative LLM provider
+- **Google Gemini**: Advanced LLM for code generation (gemini-1.5-flash)
+- **Together.ai**: Alternative LLM provider (Llama-3.1-70B-Instruct-Turbo)
+- **Redis**: Optional persistent session storage
 - **Uvicorn**: ASGI server
 
 ### Frontend Technologies
@@ -210,6 +217,8 @@ WS /api/ws/chat
 - Dark/light theme support
 - Secure code execution
 - File upload and processing
+- Redis-backed persistent sessions
+- Graceful Redis connection handling
 
 ### In Progress 🔄
 - Enhanced error handling

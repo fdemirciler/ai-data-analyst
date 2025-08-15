@@ -1,3 +1,5 @@
+// Frontent/src/services/api.ts
+
 // API configuration and utilities
 const API_BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:8000';
 
@@ -43,7 +45,8 @@ class ApiService {
     });
 
     if (!response.ok) {
-      throw new Error(`Upload failed: ${response.statusText}`);
+      const errorText = await response.text();
+      throw new Error(`Upload failed: ${response.statusText} - ${errorText}`);
     }
 
     return response.json();
@@ -68,16 +71,16 @@ class ApiService {
 
   // Stream chat responses (for real-time agent responses)
   streamMessageWS(request: ChatRequest): WebSocket {
-    const url = new URL(`${this.baseUrl.replace('http', 'ws')}/api/chat/ws`);
-    const ws = new WebSocket(url.toString());
-    ws.addEventListener('open', () => {
-      ws.send(JSON.stringify(request));
-    });
-    return ws;
-  }
+    // This logic correctly handles both http -> ws and https -> wss
+    const wsUrl = this.baseUrl.replace(/^http/, 'ws');
+    const socket = new WebSocket(`${wsUrl}/api/chat/ws`);
 
-  // Get analysis status
-  // Placeholder for future status endpoint; not implemented server-side yet
+    socket.addEventListener('open', () => {
+      socket.send(JSON.stringify(request));
+    });
+
+    return socket;
+  }
 }
 
 export const apiService = new ApiService();

@@ -189,12 +189,14 @@ async def chat_ws(websocket: WebSocket):
         await websocket.send_json({"type": "stage", "value": "summarize"})
 
         # Summarization stage with real-time streaming
-        if exec_result.get("status") == "ok" and exec_result.get("logs"):
-            # Stream LLM summary in real-time
-            try:
-                from ..agent.llm import stream_summary_chunks
+        # Always try to generate LLM explanations, even if sandbox is disabled
+        try:
+            from ..agent.llm import stream_summary_chunks
 
-                accumulated_answer = ""
+            accumulated_answer = ""
+            
+            # If sandbox execution was successful, use the logs
+            if exec_result.get("status") == "ok" and exec_result.get("logs"):
                 for chunk in stream_summary_chunks(
                     session.payload, message, exec_result, code
                 ):
@@ -202,39 +204,44 @@ async def chat_ws(websocket: WebSocket):
                     await websocket.send_json({"type": "content", "value": chunk})
                     if len(accumulated_answer) > 4000:  # Prevent runaway responses
                         break
-
-                final_answer = accumulated_answer
-            except Exception as e:
-                # Fallback if LLM streaming fails
-                from ..agent.orchestrator import run_basic_analysis
-
-                logs = exec_result.get("logs", "").strip()
-                if logs:
-                    final_answer = (
-                        f"Analysis Results:\n{logs}\n\n"
-                        + run_basic_analysis(session.payload, message)
-                    )
-                else:
-                    final_answer = (
-                        run_basic_analysis(session.payload, message)
-                        + f"\n\n(Exec status: {exec_result.get('status', 'n/a')}, Error: {str(e)})"
-                    )
-
-                # Stream the fallback response
-                chunk_size = 30
-                for i in range(0, len(final_answer), chunk_size):
-                    chunk = final_answer[i : i + chunk_size]
+            else:
+                # If sandbox is disabled or failed, generate explanations based on the code itself
+                # Create a mock exec_result with the generated code for analysis
+                mock_exec_result = {
+                    "status": "simulated",
+                    "logs": f"Generated Analysis Code:\n\n{code}\n\n(Note: Code execution was skipped - sandbox disabled or failed)"
+                }
+                
+                for chunk in stream_summary_chunks(
+                    session.payload, message, mock_exec_result, code
+                ):
+                    accumulated_answer += chunk
                     await websocket.send_json({"type": "content", "value": chunk})
-        else:
-            # Execution failed - use heuristic analysis
+                    if len(accumulated_answer) > 4000:  # Prevent runaway responses
+                        break
+
+            final_answer = accumulated_answer
+            
+        except Exception as e:
+            # Fallback if LLM streaming fails
             from ..agent.orchestrator import run_basic_analysis
 
-            heuristic = run_basic_analysis(session.payload, message)
-            final_answer = (
-                heuristic + f"\n\n(Exec status: {exec_result.get('status', 'n/a')})"
-            )
+            logs = exec_result.get("logs", "").strip()
+            if logs:
+                final_answer = (
+                    f"Analysis Results:\n{logs}\n\n"
+                    + run_basic_analysis(session.payload, message)
+                )
+            else:
+                # Generate explanation even without execution logs
+                heuristic = run_basic_analysis(session.payload, message)
+                final_answer = (
+                    f"Generated Analysis Code:\n\n```python\n{code}\n```\n\n"
+                    + heuristic
+                    + f"\n\n(Note: Code execution was skipped - sandbox disabled. Error: {str(e)})"
+                )
 
-            # Stream the heuristic response
+            # Stream the fallback response
             chunk_size = 30
             for i in range(0, len(final_answer), chunk_size):
                 chunk = final_answer[i : i + chunk_size]

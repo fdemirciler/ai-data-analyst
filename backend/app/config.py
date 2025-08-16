@@ -30,8 +30,7 @@ class Settings(BaseModel):
     # File Uploads
     max_upload_mb: int = 50
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = {"arbitrary_types_allowed": True, "protected_namespaces": ()}
 
 
 def _env_bool(name: str, default: bool) -> bool:

@@ -22,7 +22,7 @@ class Settings(BaseModel):
     # LLM Provider: 'google' or 'together'
     llm_provider: str = "google"
     # Sampling / decoding
-    llm_temperature: float = 0.1
+    llm_temperature: float = 0.3
 
     # Google Gemini Settings
     gemini_api_key: str | None = None
@@ -34,6 +34,13 @@ class Settings(BaseModel):
 
     # File Uploads
     max_upload_mb: int = 50
+
+    # Structured Summary / Prompt composition
+    summary_max_tables: int = 5
+    summary_max_rows: int = 50
+    summary_max_cols: int = 15
+    summary_prompt_char_budget: int = 60000
+    summary_include_errors_limit: int = 5
 
     model_config = {"arbitrary_types_allowed": True, "protected_namespaces": ()}
 
@@ -78,11 +85,33 @@ def load_settings() -> Settings:
         ttl_val = None
 
     # Parse optional temperature
-    temp_raw = os.getenv("LLM_TEMPERATURE", "0.1")
+    temp_raw = os.getenv("LLM_TEMPERATURE", "0.3")
     try:
         temp_val = float(temp_raw)
     except Exception:
-        temp_val = 0.1
+        temp_val = 0.3
+
+    # Structured summary env overrides
+    try:
+        sum_max_tables = int(os.getenv("SUMMARY_MAX_TABLES", "5"))
+    except Exception:
+        sum_max_tables = 5
+    try:
+        sum_max_rows = int(os.getenv("SUMMARY_MAX_ROWS", "50"))
+    except Exception:
+        sum_max_rows = 50
+    try:
+        sum_max_cols = int(os.getenv("SUMMARY_MAX_COLS", "15"))
+    except Exception:
+        sum_max_cols = 15
+    try:
+        sum_prompt_budget = int(os.getenv("SUMMARY_PROMPT_CHAR_BUDGET", "60000"))
+    except Exception:
+        sum_prompt_budget = 60000
+    try:
+        sum_err_limit = int(os.getenv("SUMMARY_INCLUDE_ERRORS_LIMIT", "5"))
+    except Exception:
+        sum_err_limit = 5
 
     return Settings(
         environment=os.getenv("ENV", "dev"),
@@ -107,6 +136,11 @@ def load_settings() -> Settings:
             "TOGETHER_MODEL", "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free"
         ),
         max_upload_mb=int(os.getenv("MAX_UPLOAD_MB", "50")),
+        summary_max_tables=sum_max_tables,
+        summary_max_rows=sum_max_rows,
+        summary_max_cols=sum_max_cols,
+        summary_prompt_char_budget=sum_prompt_budget,
+        summary_include_errors_limit=sum_err_limit,
     )
 
 

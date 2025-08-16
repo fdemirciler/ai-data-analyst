@@ -108,6 +108,7 @@ export default function App() {
     UploadedFile[]
   >([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [creatingSession, setCreatingSession] = useState(false);
   const [stage, setStage] = useState<string | null>(null);
   const [isInputExpanded, setIsInputExpanded] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -165,6 +166,7 @@ export default function App() {
     };
 
     setUploadedFiles([uploadedFile]);
+    setCreatingSession(true);
 
     // Upload to backend to create session
     console.log('Starting file upload for:', file.name);
@@ -177,6 +179,7 @@ export default function App() {
       console.error('Upload failed:', e);
       alert('Upload failed. A session could not be created. Please try again.');
     }
+    setCreatingSession(false);
 
     // Clear the input
     if (event.target) {
@@ -279,6 +282,7 @@ export default function App() {
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
+      if (!sessionId || creatingSession) return;
       handleSendMessage();
     }
   };
@@ -634,11 +638,14 @@ export default function App() {
                     >
                       <Paperclip className="w-4 h-4" />
                     </Button>
+                    {creatingSession && !sessionId && (
+                      <span className="text-xs text-muted-foreground">Creating session...</span>
+                    )}
 
                     <Button
                       size="icon"
                       onClick={handleSendMessage}
-                      disabled={!hasContent || isLoading}
+                      disabled={!hasContent || isLoading || !sessionId || creatingSession}
                       className={`rounded-full w-10 h-10 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white border-0 disabled:opacity-50 shadow-lg`}
                     >
                       <ArrowUp className="w-4 h-4" />

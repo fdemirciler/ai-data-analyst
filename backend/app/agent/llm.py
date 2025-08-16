@@ -4,6 +4,7 @@ from typing import Dict, Any, Iterable
 import re
 from ..config import settings
 from ..logging_utils import log_llm_generation, log_error
+from .output_parser import parse_exec_output, _build_html_table
 
 _NO_KEY_MSG = "# LLM disabled or missing API key; using stub code\n"
 
@@ -59,6 +60,14 @@ def generate_analysis_code(
             "- For comparisons: Calculate differences and percentage changes\n"
             "- Format numbers appropriately (commas, decimals)\n"
             "- Include column headers and meaningful labels in output\n\n"
+            "OUTPUT FORMAT:\n"
+            "- Print section headings to structure output (e.g., '## Overview', '## Results', '## Key Insights').\n"
+            "- Use short bullet points for lists; emphasize key values with **bold**.\n"
+            "- When printing tables, use HTML via pandas DataFrame.to_html(index=False); avoid Markdown/ASCII tables.\n"
+            "- Print a 'Title: <...>' line immediately before any related table when appropriate.\n\n"
+            "NAMING CONVENTIONS:\n"
+            "- When aggregating across year-like columns (e.g., 2022, 2023, ...), name the dimension column 'Year' (not 'Metric').\n"
+            "- When listing metric names from a label column, use 'Metric' as the label column.\n\n"
             "EXAMPLES OF GOOD RESPONSES:\n"
             "- If asked 'show me metrics': Print the actual list of metric names from the data\n"
             "- If asked 'compare periods': Show actual values and calculations\n"
@@ -195,78 +204,205 @@ def stream_summary_chunks(
         status = (exec_result or {}).get("status", "n/a")
         code = generated_code or ""
 
-        # Include both the beginning and end of logs so headers are preserved
-        head_len = 1500
-        tail_len = 1500
-        logs_head = logs_full[:head_len]
-        logs_tail = logs_full[-tail_len:] if len(logs_full) > head_len else ""
+        # Parse or reuse structured output from execution logs
+        structured = (exec_result or {}).get("structured") or parse_exec_output(
+            logs_full,
+            max_tables=int(settings.summary_max_tables),
+            max_rows=int(settings.summary_max_rows),
+            max_cols=int(settings.summary_max_cols),
+        )
+        # Persist back into exec_result for transparency
+        try:
+            if isinstance(exec_result, dict):
+                exec_result["structured"] = structured
+        except Exception:
+            pass
+
+        # Helper to build HTML tables string with limits
+        def build_tables_html(tables: list[dict], mt: int, mr: int, mc: int) -> str:
+            html_parts: list[str] = []
+            for t in (tables or [])[: mt if mt > 0 else 0]:
+                cols = t.get("columns") or []
+                rows = t.get("rows") or []
+                tcols = cols[:mc] if cols else cols
+                trows = [r[:mc] for r in rows[:mr]]
+                title = (t.get("title") or "").strip()
+                if title:
+                    html_parts.append(f"Title: {title}\n")
+                html_parts.append(_build_html_table(tcols, trows))
+            return "\n\n".join(html_parts)
+
+        # Collect stats and messages
+        stats_items = structured.get("stats", []) if structured else []
+        messages = structured.get("messages", []) if structured else []
+        excerpts = structured.get("excerpts", {}) if structured else {}
+
+        # Initial limits from settings
+        max_tables = int(settings.summary_max_tables)
+        max_rows = int(settings.summary_max_rows)
+        max_cols = int(settings.summary_max_cols)
+        err_limit = int(settings.summary_include_errors_limit)
+        budget = int(settings.summary_prompt_char_budget)
+
         detected_periods = _detect_period_labels_from_logs(logs_full)
 
-        # Enhanced prompt that analyzes execution output while leveraging dataset context
-        prompt_parts = [
-            "You are a senior data analyst providing insights based on script execution results.\n\n",
-            "ANALYSIS APPROACH:\n",
-            "1. PRIORITIZE EXECUTION OUTPUT: Use the script results as your primary data source\n",
-            "2. PROVIDE CONTEXT: Use dataset schema to add meaningful context and interpretation\n",
-            "3. BE COMPREHENSIVE: If the output shows lists or data, present them clearly\n",
-            "4. ANSWER THE QUESTION: Directly address what the user asked for\n\n",
-            "STRICT DATA HANDLING:\n",
-            "- Use the exact column headers/period labels found in the execution output; do NOT invent or substitute different years.\n",
-            "- If a value is NaN in the output, keep it as NaN; do not fabricate values.\n",
-            "- If headers are not visible, infer them only from the visible output context; do not guess unrelated years.\n\n",
-            "OUTPUT FORMAT (use Markdown headings and bullets exactly as below):\n",
-            "- Start each section on a new line.\n",
-            "- Use blank lines between sections and between paragraphs for readability.\n",
-            "- Do not include filler phrases like 'presented below'; just present the content.\n",
-            "\n",
-            "## Key Findings\n",
-            "- Bullet points summarizing the primary results from the execution output.\n",
-            "\n",
-            "## Results Table\n",
-            "(Insert the HTML table here if tabular data exists; otherwise omit this section)\n",
-            "\n",
-            "## Interpretation\n",
-            "- Bullet points interpreting the results and answering the user's question.\n",
-            "\n",
-            "## Caveats\n",
-            "- Bullet points for assumptions, data limitations, or NaN handling (omit if none).\n",
-            "\n",
-            "## Next Steps\n",
-            "- Bullet points suggesting follow-up analysis or actions (omit if not applicable).\n\n",
-            "RESPONSE REQUIREMENTS:\n",
-            "- Start with the key findings from the execution output\n",
-            "- Present data in clear, formatted tables when applicable\n",
-            "- Provide interpretation and insights based on the results\n",
-            "- If the output contains lists (like metrics), display them prominently\n",
-            "- Use the dataset context to explain what the data represents\n\n",
-            "TABLE FORMATTING:\n",
-            "- Create HTML tables for structured data using this format:\n",
-            "  <table class='analysis-table'>\n",
-            "  <thead>\n",
-            "  <tr><th>Column 1</th><th>Column 2</th></tr>\n",
-            "  </thead>\n",
-            "  <tbody>\n",
-            "  <tr><td>Value 1</td><td>Value 2</td></tr>\n",
-            "  </tbody>\n",
-            "  </table>\n",
-            "- Use proper number formatting with commas and appropriate decimals\n",
-            "- Include meaningful headers that describe the data\n\n",
-            f"User Question: {question}\n",
-            f"Dataset Context: {schema_summary}\n\n",
-            f"EXECUTION OUTPUT (BEGINNING):\n{logs_head}\n\n",
-            f"EXECUTION OUTPUT (END):\n{logs_tail}\n\n",
+        # Build column semantics from schema metadata
+        cols_meta = session_payload.get("columns", {}) or {}
+        def _dtype_of(m: dict) -> str:
+            return str(
+                m.get("type")
+                or m.get("detected_type")
+                or (m.get("stats", {}) or {}).get("dtype")
+                or ""
+            ).lower()
+
+        text_like_cols = [
+            name
+            for name, meta in cols_meta.items()
+            if any(k in _dtype_of(meta) for k in ("object", "string", "category", "text", "str"))
         ]
-        if detected_periods:
-            prompt_parts.append(
-                f"DETECTED PERIOD LABELS (from output): {', '.join(detected_periods)}\n\n"
+        numeric_like_cols = [
+            name
+            for name, meta in cols_meta.items()
+            if any(k in _dtype_of(meta) for k in ("int", "float", "number", "numeric"))
+        ]
+        year_like_cols = [
+            name for name in cols_meta.keys() if re.fullmatch(r"(19|20)\d{2}", str(name))
+        ]
+        metric_col_name = next((n for n in cols_meta.keys() if str(n).lower() == "metric"), None)
+
+        # Function to assemble the prompt with current limits
+        def assemble_prompt(mt: int, mr: int, mc: int) -> str:
+            tables_html = build_tables_html(structured.get("tables", []), mt, mr, mc)
+            # Build compact stats bullets
+            stats_lines = "\n".join(
+                f"- {s.get('name')}: {s.get('value')}" for s in (stats_items or [])
             )
-        prompt_parts.append(
-            f"GENERATED CODE (context only, do not re-run):\n```python\n{code[:1200]}\n```\n\n"
-        )
-        prompt_parts.append(
-            "Analyze the execution output and provide a comprehensive response that directly answers the user's question:"
-        )
-        prompt = "".join(prompt_parts)
+            # Recent error/warning lines
+            errs = messages[-err_limit:] if err_limit > 0 else []
+            errs_text = "\n".join(f"- {m}" for m in errs)
+
+            prompt_parts = [
+                "You are a senior data analyst providing insights based on script execution results.\n\n",
+                "ANALYSIS APPROACH:\n",
+                "1. PRIORITIZE EXECUTION OUTPUT: Use the provided structured results as your primary source.\n",
+                "2. PROVIDE CONTEXT: Use the dataset schema to add interpretation.\n",
+                "3. ANSWER THE QUESTION: Be direct and use the actual values shown.\n\n",
+                "STRICT DATA HANDLING:\n",
+                "- Use exact headers/period labels from the provided tables; do NOT invent years or columns.\n",
+                "- Keep NaN as NaN; do not fabricate values.\n\n",
+                "RESPONSE FORMAT:\n",
+                "- Use clear section headings (e.g., '## Overview', '## Key Findings', '## Tables').\n",
+                "- Use concise bullet points; emphasize key metrics with **bold**.\n",
+                "- Any tables in your answer must be HTML only (use <table>... not Markdown).\n",
+                "- If helpful, include a 'Title: <...>' line immediately before a table.\n\n",
+                f"User Question: {question}\n",
+                f"Dataset Context: {schema_summary}\n\n",
+                "COLUMN SEMANTICS (from dataset schema):\n",
+                (
+                    (
+                        f"- Label column for metrics: '{metric_col_name}'\n"
+                        if metric_col_name
+                        else ""
+                    )
+                    + (
+                        f"- Text-like columns: {', '.join(map(str, text_like_cols[:12]))}\n"
+                        if text_like_cols
+                        else ""
+                    )
+                    + (
+                        f"- Year-like columns: {', '.join(map(str, year_like_cols[:12]))}\n"
+                        if year_like_cols
+                        else ""
+                    )
+                    + (
+                        f"- Numeric columns: {', '.join(map(str, numeric_like_cols[:12]))}\n"
+                        if numeric_like_cols
+                        else ""
+                    )
+                    + (
+                        "- For questions about 'metrics', prefer tables where the label column lists metric names (not years).\n"
+                    )
+                    + (
+                        "- If a table header says 'Metric' but values are 4-digit years, interpret that column as 'Year' for orientation (keep values as-is).\n\n"
+                    )
+                ),
+                "## Key Findings\n",
+                "- Summarize the primary results from the structured output.\n\n",
+                "## Structured Execution Output\n",
+                (tables_html + "\n\n") if tables_html else "(No tables detected)\n\n",
+            ]
+            if stats_lines:
+                prompt_parts += [
+                    "## Key Statistics\n",
+                    stats_lines + "\n\n",
+                ]
+            if errs_text:
+                prompt_parts += [
+                    "## Errors/Warnings (recent)\n",
+                    errs_text + "\n\n",
+                ]
+            # Fallback excerpts if no tables
+            if not tables_html:
+                head = (excerpts or {}).get("head") or ""
+                mid = (excerpts or {}).get("mid") or ""
+                tail = (excerpts or {}).get("tail") or ""
+                prompt_parts += [
+                    "## Raw Output Excerpts (fallback)\n",
+                    ("BEGINNING:\n" + head + "\n\n") if head else "",
+                    ("MIDDLE:\n" + mid + "\n\n") if mid else "",
+                    ("END:\n" + tail + "\n\n") if tail else "",
+                ]
+            if detected_periods:
+                prompt_parts.append(
+                    f"DETECTED PERIOD LABELS (from output): {', '.join(detected_periods)}\n\n"
+                )
+            prompt_parts.append(
+                f"GENERATED CODE (context only, do not re-run):\n```python\n{code[:1200]}\n```\n\n"
+            )
+            prompt_parts.append(
+                "Provide a clear answer that directly addresses the user's question, using the data shown above."
+            )
+            return "".join(prompt_parts)
+
+        # Assemble and adaptively downscale if over budget
+        prompt = assemble_prompt(max_tables, max_rows, max_cols)
+        if len(prompt) > budget:
+            # Reduction steps for rows, then cols, then tables
+            row_steps = [50, 30, 15, 10, 5]
+            col_steps = [15, 10, 8, 6, 5]
+            table_steps = [5, 3, 2, 1]
+            # Find current indices
+            r_idx = 0
+            c_idx = 0
+            t_idx = 0
+            # Move to current/equal step
+            while r_idx < len(row_steps) and row_steps[r_idx] > max_rows:
+                r_idx += 1
+            while c_idx < len(col_steps) and col_steps[c_idx] > max_cols:
+                c_idx += 1
+            while t_idx < len(table_steps) and table_steps[t_idx] > max_tables:
+                t_idx += 1
+            # Try reducing progressively
+            for r_try in range(r_idx, len(row_steps)):
+                prompt = assemble_prompt(max_tables, row_steps[r_try], max_cols)
+                if len(prompt) <= budget:
+                    max_rows = row_steps[r_try]
+                    break
+            if len(prompt) > budget:
+                for c_try in range(c_idx, len(col_steps)):
+                    prompt = assemble_prompt(max_tables, max_rows, col_steps[c_try])
+                    if len(prompt) <= budget:
+                        max_cols = col_steps[c_try]
+                        break
+            if len(prompt) > budget:
+                for t_try in range(t_idx, len(table_steps)):
+                    prompt = assemble_prompt(table_steps[t_try], max_rows, max_cols)
+                    if len(prompt) <= budget:
+                        max_tables = table_steps[t_try]
+                        break
+            # Final assemble with the best limits found
+            prompt = assemble_prompt(max_tables, max_rows, max_cols)
 
         # Log the prompt for debugging
         log_llm_generation(

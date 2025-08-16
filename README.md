@@ -61,7 +61,7 @@ The AI Analyst Agent is an intelligent data analysis platform that allows users 
    
    # Configuration
    LLM_PROVIDER=google  # or "together"
-   LLM_TEMPERATURE=0.1  # lower = more deterministic
+   LLM_TEMPERATURE=0.3  # default 0.3; lower = more deterministic
    GEMINI_MODEL=gemini-2.5-flash
    TOGETHER_MODEL=meta-llama/Llama-3.3-70B-Instruct-Turbo-Free
    ENABLE_LLM=true
@@ -94,7 +94,7 @@ The AI Analyst Agent is an intelligent data analysis platform that allows users 
    SESSION_TTL_SECONDS=1800
    REDIS_KEY_PREFIX=ai-da-local
    # LLM controls
-   LLM_TEMPERATURE=0.1
+   LLM_TEMPERATURE=0.3
    ```
 3. **Run the backend** (from project root)
    ```powershell

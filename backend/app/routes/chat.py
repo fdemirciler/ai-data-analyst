@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
+import uuid
 
 from ..session import session_store
 from ..agent.orchestrator import run_agent_response
@@ -38,6 +39,11 @@ class ArtifactsResponse(BaseModel):
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
+    # Validate UUID format early for clearer errors when clients send invalid IDs
+    try:
+        uuid.UUID(req.sessionId)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid sessionId format; expected UUID")
     session = session_store.get(req.sessionId)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found or expired")
@@ -93,6 +99,13 @@ async def chat_ws(websocket: WebSocket):
             await websocket.send_json(
                 {"type": "error", "message": "sessionId and message are required"}
             )
+            await websocket.close()
+            return
+        # Validate UUID format before session lookup
+        try:
+            uuid.UUID(session_id)
+        except Exception:
+            await websocket.send_json({"type": "error", "message": "Invalid sessionId format; expected UUID"})
             await websocket.close()
             return
         session = session_store.get(session_id)

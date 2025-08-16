@@ -86,11 +86,7 @@ The AI Analyst Agent is an intelligent data analysis platform that allows users 
    ```powershell
    docker compose up -d redis
    ```
-2. **Create local .env**
-   ```powershell
-   Copy-Item .env.example .env
-   ```
-   Ensure these keys exist (defaults are already set):
+2. **Create `.env` in project root with:**
    ```env
    ENABLE_REDIS_SESSIONS=true
    REDIS_URL=redis://localhost:6379/0
@@ -145,8 +141,9 @@ Content-Type: multipart/form-data
 **Response:**
 ```json
 {
-  "sessionId": "uuid-string",
-  "filename": "data.csv",
+  "sessionId": "<uuid>",
+  "fileId": "<uuid>",
+  "status": "analyzed",
   "rows": 1000,
   "columns": ["col1", "col2"]
 }
@@ -154,7 +151,7 @@ Content-Type: multipart/form-data
 
 #### WebSocket Chat
 ```ws
-WS /api/ws/chat
+WS /api/chat/ws
 ```
 **Message Format:**
 ```json
@@ -276,6 +273,8 @@ Notes:
 - Redis is initialized on app startup (`backend/app/main.py`).
 - Sliding TTL keeps sessions alive while active; lists are trimmed to last N.
 - Use `rediss://` on Render and keep a single instance to avoid file-path issues across machines.
+- Frontend uses the real `sessionId` returned by `/api/upload` for all REST and WS calls (no fake IDs).
+- Backend validates `sessionId` as a UUID and returns 400 for invalid formats.
 
 ### In Progress 🔄
 - Enhanced error handling

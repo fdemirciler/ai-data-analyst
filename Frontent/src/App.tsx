@@ -166,10 +166,6 @@ export default function App() {
 
     setUploadedFiles([uploadedFile]);
 
-    // TEMPORARY: Set a test session ID to bypass upload issues
-    console.log('Setting temporary session ID for testing');
-    setSessionId('test-session-' + Date.now());
-
     // Upload to backend to create session
     console.log('Starting file upload for:', file.name);
     try {
@@ -179,8 +175,7 @@ export default function App() {
       console.log('Session ID set to:', res.sessionId);
     } catch (e) {
       console.error('Upload failed:', e);
-      // Keep the temporary session ID if upload fails
-      console.log('Keeping temporary session ID due to upload failure');
+      alert('Upload failed. A session could not be created. Please try again.');
     }
 
     // Clear the input

@@ -240,21 +240,33 @@ class RedisSessionStore:
         return int(self._r.llen(self._k_msgs(session_id)))
 
 
-# Select session backend
-if settings.enable_redis_sessions:
-    # Initialize Redis client and verify connectivity
-    _client = redis.Redis.from_url(
-        settings.redis_url,
-        decode_responses=True,
-        socket_connect_timeout=2,
-        socket_timeout=2,
-    )
-    try:
-        _client.ping()
-    except Exception as e:  # fail fast in Redis mode
-        raise RuntimeError(f"Redis not reachable: {e}")
-    session_store = RedisSessionStore(
-        _client, ttl_seconds=settings.session_ttl_seconds, key_prefix=settings.redis_key_prefix
-    )
-else:
-    session_store = SessionStore(ttl_seconds=settings.session_ttl_seconds)
+# Placeholder for the session store, to be initialized on app startup.
+session_store: SessionStore | RedisSessionStore = SessionStore(ttl_seconds=86400)  # Default fallback
+
+def initialize_session_store():
+    """Initializes the session store based on settings."""
+    global session_store
+    if settings.enable_redis_sessions:
+        print(f"Connecting to Redis at {settings.redis_url}...")
+        print(f"Redis sessions enabled: {settings.enable_redis_sessions}")
+        try:
+            _client = redis.Redis.from_url(
+                settings.redis_url,
+                decode_responses=True,
+                socket_connect_timeout=2,
+                socket_timeout=2,
+            )
+            _client.ping()
+            print("Redis connection successful.")
+            session_store = RedisSessionStore(
+                _client, ttl_seconds=settings.session_ttl_seconds, key_prefix=settings.redis_key_prefix
+            )
+        except Exception as e:
+            print(f"FATAL: Could not connect to Redis: {e}")
+            print("Please ensure Redis is running and accessible at the configured URL.")
+            # Fallback to in-memory store to allow server to run for other routes.
+            print("Falling back to in-memory session store.")
+            session_store = SessionStore(ttl_seconds=settings.session_ttl_seconds)
+    else:
+        print("Using in-memory session store.")
+        session_store = SessionStore(ttl_seconds=settings.session_ttl_seconds)

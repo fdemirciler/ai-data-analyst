@@ -87,10 +87,10 @@ def load_settings() -> Settings:
         redis_key_prefix=os.getenv("REDIS_KEY_PREFIX", "ai-da"),
         llm_provider=os.getenv("LLM_PROVIDER", "google"),
         gemini_api_key=gemini_key,
-        gemini_model=os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
+        gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
         together_api_key=os.getenv("TOGETHER_API_KEY"),
         together_model=os.getenv(
-            "TOGETHER_MODEL", "meta-llama/Llama-3.1-70B-Instruct-Turbo"
+            "TOGETHER_MODEL", "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free"
         ),
         max_upload_mb=int(os.getenv("MAX_UPLOAD_MB", "50")),
     )

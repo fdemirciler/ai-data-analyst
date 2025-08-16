@@ -153,8 +153,8 @@ WS /api/ws/chat
 - **WebSockets**: Real-time communication
 - **Pandas**: Data manipulation and analysis
 - **Docker**: Secure code execution sandbox
-- **Google Gemini**: Advanced LLM for code generation (gemini-1.5-flash)
-- **Together.ai**: Alternative LLM provider (Llama-3.1-70B-Instruct-Turbo)
+- **Google Gemini**: Advanced LLM for code generation (gemini-2.5-flash)
+- **Together.ai**: Alternative LLM provider (Llama-3.3-70B-Instruct-Turbo-Free)
 - **Redis**: Optional persistent session storage
 - **Uvicorn**: ASGI server
 

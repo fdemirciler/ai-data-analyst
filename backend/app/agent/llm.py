@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Dict, Any, Iterable
+import re
 from ..config import settings
 from ..logging_utils import log_llm_generation, log_error
 
@@ -90,12 +91,28 @@ def generate_analysis_code(
             f"LLM ({settings.llm_provider}) response received", len(code), True
         )
         return code
-
     except Exception as e:
         log_error(
             "llm", e, f"Code generation failed for provider {settings.llm_provider}"
         )
         return _NO_KEY_MSG + _fallback_stub(plan) + f"# LLM error: {e}\n"
+
+
+def _detect_period_labels_from_logs(logs: str) -> list[str]:
+    """Heuristically detect year-like period labels (e.g., 2024, 2025) from logs.
+
+    Looks for 4-digit years in the logs. Returns unique labels preserving order of appearance.
+    """
+    if not logs:
+        return []
+    seen = set()
+    labels: list[str] = []
+    for m in re.finditer(r"\b(19|20)\d{2}\b", logs):
+        y = m.group(0)
+        if y not in seen:
+            seen.add(y)
+            labels.append(y)
+    return labels[:6]
 
 
 def _fallback_stub(plan: str) -> str:
@@ -169,41 +186,82 @@ def stream_summary_chunks(
         client = _get_llm_client(settings.llm_provider)
 
         schema_summary = _build_schema_summary(session_payload)
-        logs = (exec_result or {}).get("logs", "")
+        logs_full = (exec_result or {}).get("logs", "") or ""
         status = (exec_result or {}).get("status", "n/a")
         code = generated_code or ""
 
+        # Include both the beginning and end of logs so headers are preserved
+        head_len = 1500
+        tail_len = 1500
+        logs_head = logs_full[:head_len]
+        logs_tail = logs_full[-tail_len:] if len(logs_full) > head_len else ""
+        detected_periods = _detect_period_labels_from_logs(logs_full)
+
         # Enhanced prompt that analyzes execution output while leveraging dataset context
-        prompt = (
-            "You are a senior data analyst providing insights based on script execution results.\n\n"
-            "ANALYSIS APPROACH:\n"
-            "1. PRIORITIZE EXECUTION OUTPUT: Use the script results as your primary data source\n"
-            "2. PROVIDE CONTEXT: Use dataset schema to add meaningful context and interpretation\n"
-            "3. BE COMPREHENSIVE: If the output shows lists or data, present them clearly\n"
-            "4. ANSWER THE QUESTION: Directly address what the user asked for\n\n"
-            "RESPONSE REQUIREMENTS:\n"
-            "- Start with the key findings from the execution output\n"
-            "- Present data in clear, formatted tables when applicable\n"
-            "- Provide interpretation and insights based on the results\n"
-            "- If the output contains lists (like metrics), display them prominently\n"
-            "- Use the dataset context to explain what the data represents\n\n"
-            "TABLE FORMATTING:\n"
-            "- Create HTML tables for structured data using this format:\n"
-            "  <table class='analysis-table'>\n"
-            "  <thead>\n"
-            "  <tr><th>Column 1</th><th>Column 2</th></tr>\n"
-            "  </thead>\n"
-            "  <tbody>\n"
-            "  <tr><td>Value 1</td><td>Value 2</td></tr>\n"
-            "  </tbody>\n"
-            "  </table>\n"
-            "- Use proper number formatting with commas and appropriate decimals\n"
-            "- Include meaningful headers that describe the data\n\n"
-            f"User Question: {question}\n"
-            f"Dataset Context: {schema_summary}\n\n"
-            f"EXECUTION OUTPUT:\n{logs[-3000:]}\n\n"
+        prompt_parts = [
+            "You are a senior data analyst providing insights based on script execution results.\n\n",
+            "ANALYSIS APPROACH:\n",
+            "1. PRIORITIZE EXECUTION OUTPUT: Use the script results as your primary data source\n",
+            "2. PROVIDE CONTEXT: Use dataset schema to add meaningful context and interpretation\n",
+            "3. BE COMPREHENSIVE: If the output shows lists or data, present them clearly\n",
+            "4. ANSWER THE QUESTION: Directly address what the user asked for\n\n",
+            "STRICT DATA HANDLING:\n",
+            "- Use the exact column headers/period labels found in the execution output; do NOT invent or substitute different years.\n",
+            "- If a value is NaN in the output, keep it as NaN; do not fabricate values.\n",
+            "- If headers are not visible, infer them only from the visible output context; do not guess unrelated years.\n\n",
+            "OUTPUT FORMAT (use Markdown headings and bullets exactly as below):\n",
+            "- Start each section on a new line.\n",
+            "- Use blank lines between sections and between paragraphs for readability.\n",
+            "- Do not include filler phrases like 'presented below'; just present the content.\n",
+            "\n",
+            "## Key Findings\n",
+            "- Bullet points summarizing the primary results from the execution output.\n",
+            "\n",
+            "## Results Table\n",
+            "(Insert the HTML table here if tabular data exists; otherwise omit this section)\n",
+            "\n",
+            "## Interpretation\n",
+            "- Bullet points interpreting the results and answering the user's question.\n",
+            "\n",
+            "## Caveats\n",
+            "- Bullet points for assumptions, data limitations, or NaN handling (omit if none).\n",
+            "\n",
+            "## Next Steps\n",
+            "- Bullet points suggesting follow-up analysis or actions (omit if not applicable).\n\n",
+            "RESPONSE REQUIREMENTS:\n",
+            "- Start with the key findings from the execution output\n",
+            "- Present data in clear, formatted tables when applicable\n",
+            "- Provide interpretation and insights based on the results\n",
+            "- If the output contains lists (like metrics), display them prominently\n",
+            "- Use the dataset context to explain what the data represents\n\n",
+            "TABLE FORMATTING:\n",
+            "- Create HTML tables for structured data using this format:\n",
+            "  <table class='analysis-table'>\n",
+            "  <thead>\n",
+            "  <tr><th>Column 1</th><th>Column 2</th></tr>\n",
+            "  </thead>\n",
+            "  <tbody>\n",
+            "  <tr><td>Value 1</td><td>Value 2</td></tr>\n",
+            "  </tbody>\n",
+            "  </table>\n",
+            "- Use proper number formatting with commas and appropriate decimals\n",
+            "- Include meaningful headers that describe the data\n\n",
+            f"User Question: {question}\n",
+            f"Dataset Context: {schema_summary}\n\n",
+            f"EXECUTION OUTPUT (BEGINNING):\n{logs_head}\n\n",
+            f"EXECUTION OUTPUT (END):\n{logs_tail}\n\n",
+        ]
+        if detected_periods:
+            prompt_parts.append(
+                f"DETECTED PERIOD LABELS (from output): {', '.join(detected_periods)}\n\n"
+            )
+        prompt_parts.append(
+            f"GENERATED CODE (context only, do not re-run):\n```python\n{code[:1200]}\n```\n\n"
+        )
+        prompt_parts.append(
             "Analyze the execution output and provide a comprehensive response that directly answers the user's question:"
         )
+        prompt = "".join(prompt_parts)
 
         # Log the prompt for debugging
         log_llm_generation(

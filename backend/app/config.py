@@ -15,6 +15,9 @@ class Settings(BaseModel):
     redis_url: str = "redis://localhost:6379/0"
     session_ttl_seconds: int | None = 86400
     redis_key_prefix: str = "ai-da"
+    # Session trimming caps (keep last N items)
+    redis_max_messages: int = 10
+    redis_max_artifacts: int = 10
 
     # LLM Provider: 'google' or 'together'
     llm_provider: str = "google"
@@ -84,6 +87,8 @@ def load_settings() -> Settings:
         redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
         session_ttl_seconds=ttl_val,
         redis_key_prefix=os.getenv("REDIS_KEY_PREFIX", "ai-da"),
+        redis_max_messages=int(os.getenv("REDIS_MAX_MESSAGES", "10")),
+        redis_max_artifacts=int(os.getenv("REDIS_MAX_ARTIFACTS", "10")),
         llm_provider=os.getenv("LLM_PROVIDER", "google"),
         gemini_api_key=gemini_key,
         gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),

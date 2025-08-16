@@ -66,16 +66,42 @@ The AI Analyst Agent is an intelligent data analysis platform that allows users 
    ENABLE_LLM=true
    
    # Redis Sessions (optional)
-   ENABLE_REDIS_SESSIONS=false  # set to true to enable Redis
-   REDIS_URL=redis://localhost:6379/0
-   SESSION_TTL_SECONDS=86400  # 24 hours
+   ENABLE_REDIS_SESSIONS=false  # set to true to enable Redis in prod
+   REDIS_URL=redis://localhost:6379/0  # use rediss://<...> on Render managed Redis
+   SESSION_TTL_SECONDS=1800  # 30 min default; sliding TTL refreshed on activity
    REDIS_KEY_PREFIX=ai-da
+   # Caps to avoid unbounded growth (we don't keep history)
+   REDIS_MAX_MESSAGES=10
+   REDIS_MAX_ARTIFACTS=10
    ```
 
 4. **Start Backend Server**
    ```powershell
    python backend/run_server.py
    ```
+
+### Local Redis (Dev)
+
+1. **Start Redis with Docker Compose**
+   ```powershell
+   docker compose up -d redis
+   ```
+2. **Create local .env**
+   ```powershell
+   Copy-Item .env.example .env
+   ```
+   Ensure these keys exist (defaults are already set):
+   ```env
+   ENABLE_REDIS_SESSIONS=true
+   REDIS_URL=redis://localhost:6379/0
+   SESSION_TTL_SECONDS=1800
+   REDIS_KEY_PREFIX=ai-da-local
+   ```
+3. **Run the backend** (from project root)
+   ```powershell
+   python backend/run_server.py
+   ```
+   The server will log: "Connecting to Redis (URL hidden)... Redis connection successful."
 
 ### Frontend Setup
 
@@ -145,6 +171,8 @@ WS /api/ws/chat
 {"type": "content", "value": "Based on the analysis..."}
 {"type": "done"}
 ```
+Notes:
+- `content` chunks may include Markdown (headings, bullets) and HTML tables for structured data.
 
 ## 🛠 Technology Stack
 
@@ -177,9 +205,10 @@ WS /api/ws/chat
 5. **Analysis**: AI interprets results and creates insights
 
 ### Advanced Prompting
-- **Strict Output Focus**: AI analyzes only script execution results
-- **Period-Aware Analysis**: Correctly identifies time periods in data
-- **Table Generation**: Automatic HTML table creation for structured data
+- **Strict Output Focus**: AI analyzes script execution results first, using dataset schema only for context
+- **Period-Aware Analysis**: Explicitly detects year-like period labels (e.g., 2024, 2025) from execution logs and instructs the model to use the exact labels present (no substitutions)
+- **Formatted Markdown Output**: Responses follow a clear Markdown structure with sections: `## Key Findings`, `## Results Table` (only if tabular data exists), `## Interpretation`, `## Caveats`, `## Next Steps`
+- **Table Generation**: Automatic HTML table creation for structured data, with class `analysis-table` for styling
 - **Error Handling**: Graceful fallbacks for analysis failures
 
 ### UI/UX Enhancements
@@ -188,6 +217,7 @@ WS /api/ws/chat
 - **Theme-Aware Tables**: CSS variable-based styling
 - **File Type Detection**: Smart file format handling
 - **Responsive Design**: Mobile-friendly interface
+- **Markdown Rendering**: Chat UI should render Markdown sections and allow basic HTML tables; ensure `<table class='analysis-table'>` is styled in frontend CSS
 
 ## 📊 Sample Usage
 
@@ -219,6 +249,33 @@ WS /api/ws/chat
 - File upload and processing
 - Redis-backed persistent sessions
 - Graceful Redis connection handling
+
+## ☁️ Deployment Notes (Render backend + Vercel frontend)
+
+- **Redis configuration (Render)**
+  - Provision a managed Redis instance on Render.
+  - Set env vars on the backend service:
+    - `ENABLE_REDIS_SESSIONS=true`
+    - `REDIS_URL=rediss://<from Render>` (prefer TLS)
+    - `SESSION_TTL_SECONDS=1800` (or your choice)
+    - `REDIS_KEY_PREFIX=ai-da`
+    - `REDIS_MAX_MESSAGES=10`
+    - `REDIS_MAX_ARTIFACTS=10`
+  - Keep a single instance (no autoscaling/scale-to-zero) so uploaded dataset files remain accessible during the session.
+
+- **App behavior**
+  - Sessions are created via `POST /api/upload` and last until the user refreshes the page.
+  - The frontend must pass the returned `sessionId` with every REST/WS call.
+  - WebSocket model: per-turn connection (open for a prompt, close when done). Persistent WS is optional and not required.
+
+- **Security/logging**
+  - The backend avoids logging full Redis URLs (credentials are masked).
+
+## ✅ Session Reliability Summary
+
+- Redis is initialized on app startup (`backend/app/main.py`).
+- Sliding TTL keeps sessions alive while active; lists are trimmed to last N.
+- Use `rediss://` on Render and keep a single instance to avoid file-path issues across machines.
 
 ### In Progress 🔄
 - Enhanced error handling

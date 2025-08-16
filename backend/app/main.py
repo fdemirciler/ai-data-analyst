@@ -15,6 +15,7 @@ from .config import settings
 from .routes import upload  # noqa: F401
 from .routes.upload import router as upload_router
 from .routes.chat import router as chat_router
+from .session import initialize_session_store
 
 
 def create_app() -> FastAPI:
@@ -51,6 +52,11 @@ def create_app() -> FastAPI:
 
     app.include_router(upload_router)
     app.include_router(chat_router)
+
+    # Initialize session store (Redis or in-memory) on startup
+    @app.on_event("startup")
+    async def _startup():  # pragma: no cover - initialization side-effect
+        initialize_session_store()
     # Startup diagnostics (non-secret)
     print(
         "Config: env=",

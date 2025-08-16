@@ -21,6 +21,8 @@ class Settings(BaseModel):
 
     # LLM Provider: 'google' or 'together'
     llm_provider: str = "google"
+    # Sampling / decoding
+    llm_temperature: float = 0.1
 
     # Google Gemini Settings
     gemini_api_key: str | None = None
@@ -75,6 +77,13 @@ def load_settings() -> Settings:
     except Exception:
         ttl_val = None
 
+    # Parse optional temperature
+    temp_raw = os.getenv("LLM_TEMPERATURE", "0.1")
+    try:
+        temp_val = float(temp_raw)
+    except Exception:
+        temp_val = 0.1
+
     return Settings(
         environment=os.getenv("ENV", "dev"),
         enable_llm=_env_bool("ENABLE_LLM", True),
@@ -90,6 +99,7 @@ def load_settings() -> Settings:
         redis_max_messages=int(os.getenv("REDIS_MAX_MESSAGES", "10")),
         redis_max_artifacts=int(os.getenv("REDIS_MAX_ARTIFACTS", "10")),
         llm_provider=os.getenv("LLM_PROVIDER", "google"),
+        llm_temperature=temp_val,
         gemini_api_key=gemini_key,
         gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
         together_api_key=os.getenv("TOGETHER_API_KEY"),

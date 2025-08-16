@@ -15,7 +15,11 @@ def _get_llm_client(provider: str):
         if not settings.gemini_api_key:
             raise ValueError("GEMINI_API_KEY is not set in the environment.")
         genai.configure(api_key=settings.gemini_api_key)
-        return genai.GenerativeModel(settings.gemini_model)
+        # Apply temperature via generation_config
+        return genai.GenerativeModel(
+            settings.gemini_model,
+            generation_config={"temperature": float(settings.llm_temperature)},
+        )
     elif provider == "together":
         from together import Together
 
@@ -79,6 +83,7 @@ def generate_analysis_code(
             response = client.chat.completions.create(
                 model=settings.together_model,
                 messages=[{"role": "user", "content": prompt}],
+                temperature=float(settings.llm_temperature),
             )
             text = response.choices[0].message.content
 
@@ -281,6 +286,7 @@ def stream_summary_chunks(
             response = client.chat.completions.create(
                 model=settings.together_model,
                 messages=[{"role": "user", "content": prompt}],
+                temperature=float(settings.llm_temperature),
             )
             text = response.choices[0].message.content
 

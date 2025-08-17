@@ -289,6 +289,7 @@ def stream_summary_chunks(
 
             prompt_parts = [
                 "You are a senior data analyst providing insights based on script execution results.\n\n",
+                
                 "ANALYSIS APPROACH:\n",
                 "1. PRIORITIZE EXECUTION OUTPUT: Use the provided structured results as your primary source.\n",
                 "2. PROVIDE CONTEXT: Use the dataset schema to add interpretation.\n",
@@ -296,15 +297,17 @@ def stream_summary_chunks(
                 "STRICT DATA HANDLING:\n",
                 "- Use exact headers/period labels from the provided tables; do NOT invent years or columns.\n",
                 "- Keep NaN as NaN; do not fabricate values.\n\n",
+                
                 "RESPONSE FORMAT:\n",
-                "- Use clear section headings (e.g., '## Overview', '## Key Findings', '## Tables').\n",
-                "- Use concise bullet points; emphasize key metrics with **bold**.\n",
-                "- Tables are already included below; do NOT reprint them in your answer. Refer to them in text.\n",
-                "- Only include a new small HTML table if strictly necessary to clarify a point.\n",
-                "- If you include any table, it must be HTML only (use <table>... not Markdown).\n",
-                "- If helpful, include a 'Title: <...>' line immediately before a table.\n\n",
-                f"User Question: {question}\n",
+                "- **Primary Goal**: Your main purpose is to interpret the data provided below and answer the user's question directly.\n"
+                "- **Structure**: Organize your response with clear markdown headings (e.g., `## Overview`, `## Key Findings`).\n"
+                "- **Tone**: Write in a clear, professional, and analytical tone. Use concise bullet points and bold formatting (`**text**`) to highlight key metrics, trends, and insights.\n"
+                "- **Data Interpretation**: Do not simply repeat the data from the tables. Explain what the numbers *mean*. For example, instead of saying 'Sales were $100', say '**Sales increased by 25%** ($80 to $100), driven by strong performance in the new product line.'\n"
+                "- **Table Handling**: The table MUST be in HTML format (using `<table>`, `<tr>`, `<th>`, `<td>`).\n\n",
+               
+               f"User Question: {question}\n",
                 f"Dataset Context: {schema_summary}\n\n",
+               
                 "COLUMN SEMANTICS (from dataset schema):\n",
                 (
                     (

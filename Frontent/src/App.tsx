@@ -353,32 +353,49 @@ export default function App() {
           margin: 1rem 0;
           border-radius: 0.5rem;
           overflow: hidden;
-          border: 1px solid hsl(var(--border));
-          background: hsl(var(--card));
+          border: 1px solid var(--border);
+          background: var(--card);
         }
         .analysis-table thead {
-          background: hsl(var(--muted));
+          background: var(--muted);
         }
         .analysis-table th,
         .analysis-table td {
           padding: 0.75rem 1rem;
           text-align: left;
-          border-bottom: 1px solid hsl(var(--border));
+          border-bottom: 1px solid var(--border);
         }
         .analysis-table th {
           font-weight: 600;
-          color: hsl(var(--foreground));
+          color: var(--foreground);
           font-size: 0.875rem;
         }
         .analysis-table td {
-          color: hsl(var(--foreground));
+          color: var(--foreground);
           font-size: 0.875rem;
         }
         .analysis-table tbody tr:hover {
-          background: hsl(var(--muted) / 0.5);
+          background: rgba(var(--muted), 0.5);
         }
         .analysis-table tbody tr:last-child td {
           border-bottom: none;
+        }
+        
+        /* Dark mode table styles */
+        .dark .analysis-table {
+          border: 1px solid var(--border);
+          background: var(--card);
+        }
+        .dark .analysis-table thead {
+          background: var(--muted);
+        }
+        .dark .analysis-table th,
+        .dark .analysis-table td {
+          border-bottom: 1px solid var(--border);
+          color: var(--foreground);
+        }
+        .dark .analysis-table tbody tr:hover {
+          background: rgba(255, 255, 255, 0.05);
         }
         
         /* Content Renderer Styles */

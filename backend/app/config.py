@@ -41,6 +41,8 @@ class Settings(BaseModel):
     summary_max_cols: int = 15
     summary_prompt_char_budget: int = 60000
     summary_include_errors_limit: int = 5
+    # Max length for summarized LLM answer text (aggregated), 0 disables cap
+    summary_max_answer_chars: int = 12000
 
     model_config = {"arbitrary_types_allowed": True, "protected_namespaces": ()}
 
@@ -112,6 +114,10 @@ def load_settings() -> Settings:
         sum_err_limit = int(os.getenv("SUMMARY_INCLUDE_ERRORS_LIMIT", "5"))
     except Exception:
         sum_err_limit = 5
+    try:
+        sum_max_answer_chars = int(os.getenv("SUMMARY_MAX_ANSWER_CHARS", "12000"))
+    except Exception:
+        sum_max_answer_chars = 12000
 
     return Settings(
         environment=os.getenv("ENV", "dev"),
@@ -141,6 +147,7 @@ def load_settings() -> Settings:
         summary_max_cols=sum_max_cols,
         summary_prompt_char_budget=sum_prompt_budget,
         summary_include_errors_limit=sum_err_limit,
+        summary_max_answer_chars=sum_max_answer_chars,
     )
 
 

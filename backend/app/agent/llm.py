@@ -64,6 +64,7 @@ def generate_analysis_code(
             "- Print section headings to structure output (e.g., '## Overview', '## Results', '## Key Insights').\n"
             "- Use short bullet points for lists; emphasize key values with **bold**.\n"
             "- When printing tables, use HTML via pandas DataFrame.to_html(index=False); avoid Markdown/ASCII tables.\n"
+            "- Format numeric columns with proper separators: df.style.format({'col': '{:,.2f}'}).to_html() for decimals, '{:,}' for integers.\n"
             "- Print a 'Title: <...>' line immediately before any related table when appropriate.\n\n"
             "NAMING CONVENTIONS:\n"
             "- When aggregating across year-like columns (e.g., 2022, 2023, ...), name the dimension column 'Year' (not 'Metric').\n"
@@ -72,6 +73,10 @@ def generate_analysis_code(
             "- If asked 'show me metrics': Print the actual list of metric names from the data\n"
             "- If asked 'compare periods': Show actual values and calculations\n"
             "- If asked 'what are the values': Display the actual data values, not metadata\n\n"
+            "CRITICAL CODING PATTERNS:\n"
+            "- Column selection: df[['Metric'] + list(year_columns)] NOT df[['Metric' + str(year_columns)]]\n"
+            "- Always use list() when concatenating column lists to avoid string concatenation\n"
+            "- Test column existence before selection: assert all(col in df.columns for col in selected_cols)\n\n"
             f"User Question: {question}\n"
             f"Analysis Plan: {plan}\n\n"
             f"Dataset Schema:\n{schema_summary}\n\n"
@@ -294,7 +299,9 @@ def stream_summary_chunks(
                 "RESPONSE FORMAT:\n",
                 "- Use clear section headings (e.g., '## Overview', '## Key Findings', '## Tables').\n",
                 "- Use concise bullet points; emphasize key metrics with **bold**.\n",
-                "- Any tables in your answer must be HTML only (use <table>... not Markdown).\n",
+                "- Tables are already included below; do NOT reprint them in your answer. Refer to them in text.\n",
+                "- Only include a new small HTML table if strictly necessary to clarify a point.\n",
+                "- If you include any table, it must be HTML only (use <table>... not Markdown).\n",
                 "- If helpful, include a 'Title: <...>' line immediately before a table.\n\n",
                 f"User Question: {question}\n",
                 f"Dataset Context: {schema_summary}\n\n",

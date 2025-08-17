@@ -179,18 +179,74 @@ def _parse_ascii_table(block_lines: List[str]) -> Tuple[List[str], List[List[str
     return header, norm_rows
 
 
+def _extract_tabular_data_from_text(logs: str) -> List[Tuple[List[str], List[List[str]]]]:
+    """Fallback: Extract tabular data from plain text when HTML parsing fails.
+    
+    Looks for patterns like:
+    - Space-separated columns with consistent alignment
+    - Pipe-separated values
+    - Colon-separated key-value pairs
+    """
+    lines = logs.splitlines()
+    tables = []
+    
+    # Look for space-separated tabular data
+    i = 0
+    while i < len(lines) - 2:
+        line = lines[i].strip()
+        if not line or len(line) < 10:
+            i += 1
+            continue
+            
+        # Check if this looks like a header row
+        words = line.split()
+        if len(words) >= 2 and all(len(w) > 1 for w in words[:3]):
+            # Look ahead for data rows with similar structure
+            data_rows = []
+            j = i + 1
+            
+            # Skip separator lines
+            while j < len(lines) and re.match(r'^[-=\s]+$', lines[j].strip()):
+                j += 1
+                
+            # Collect data rows
+            while j < len(lines) and j < i + 20:  # Limit search
+                data_line = lines[j].strip()
+                if not data_line:
+                    break
+                data_words = data_line.split()
+                if len(data_words) == len(words):  # Same column count
+                    data_rows.append(data_words)
+                    j += 1
+                else:
+                    break
+            
+            if len(data_rows) >= 2:  # Found a table
+                tables.append((words, data_rows))
+                i = j
+            else:
+                i += 1
+        else:
+            i += 1
+    
+    return tables
+
+
 def parse_exec_output(logs: str, *, max_tables: int = 5, max_rows: int = 50, max_cols: int = 15) -> Dict[str, Any]:
     """Parse execution logs to extract structured outputs.
 
     Returns a dict with tables, stats, messages, and excerpts. Tables are normalized to HTML
     and also include underlying columns/rows when derivable so callers can downscale.
+    
+    Enhanced with fallback mechanisms for partial/malformed tables.
     """
     tables: List[Dict[str, Any]] = []
     stats: List[Dict[str, str]] = []
     messages: List[str] = []
 
-    # 1) HTML tables
-    for m in re.finditer(r"<table[\s\S]*?</table>", logs, flags=re.I):
+    # 1) HTML tables (with enhanced error handling)
+    html_table_pattern = r"<table[\s\S]*?</table>"
+    for m in re.finditer(html_table_pattern, logs, flags=re.I):
         html_tbl = m.group(0)
         # Try to capture a preceding non-empty line as a title/caption
         title: str | None = None
@@ -208,10 +264,29 @@ def parse_exec_output(logs: str, *, max_tables: int = 5, max_rows: int = 50, max
                     break
         except Exception:
             title = None
+            
         try:
             cols, rows = _parse_html_table_to_data(html_tbl)
+            if not cols and not rows:  # Empty table, skip
+                continue
         except Exception:
-            cols, rows = ([], [])
+            # Try to recover from malformed HTML table
+            try:
+                # Extract table content between tags, parse as text
+                table_content = re.sub(r"<[^>]+>", " ", html_tbl)
+                table_content = re.sub(r"\s+", " ", table_content).strip()
+                if len(table_content) > 20:  # Has meaningful content
+                    # Try to parse as space-separated data
+                    text_tables = _extract_tabular_data_from_text(table_content)
+                    if text_tables:
+                        cols, rows = text_tables[0]
+                    else:
+                        continue
+                else:
+                    continue
+            except Exception:
+                continue
+                
         n_rows = len(rows)
         n_cols = max((len(r) for r in rows), default=len(cols))
         # Trim and build normalized HTML
@@ -302,7 +377,26 @@ def parse_exec_output(logs: str, *, max_tables: int = 5, max_rows: int = 50, max
         if re.search(r"traceback|error|exception|warning", ln, flags=re.I):
             messages.append(ln.strip())
 
-    # 6) Excerpts (for fallback when no tables)
+    # 6) Fallback: Extract tables from plain text if no structured tables found
+    if len(tables) < max_tables:
+        text_tables = _extract_tabular_data_from_text(logs)
+        for cols, rows in text_tables[:max_tables - len(tables)]:
+            if cols and rows:
+                n_rows = len(rows)
+                n_cols = max(len(cols), max((len(r) for r in rows), default=0))
+                tcols, trows = _trim_table(cols, rows, max_rows, max_cols)
+                html_norm = _build_html_table(tcols, trows)
+                tables.append({
+                    "html": html_norm,
+                    "columns": tcols,
+                    "rows": trows,
+                    "n_rows": n_rows,
+                    "n_cols": n_cols,
+                    "source": "text_fallback",
+                    "title": "Extracted from text",
+                })
+
+    # 7) Excerpts (for fallback when no tables)
     head = logs[:800]
     tail = logs[-800:] if len(logs) > 800 else ""
     mid = None

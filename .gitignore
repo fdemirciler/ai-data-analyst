@@ -358,14 +358,10 @@ config.json
 *.pt
 *.pth
 
-# Data files (uncomment if you want to ignore data)
-# *.csv
-# *.xlsx
-# *.xls
-# *.json
-# *.parquet
+# Data files
+*.csv
+*.xlsx
+*.xls
+*.json
+*.parquet
 
-
-project_brief.txt
-
-BS.csv

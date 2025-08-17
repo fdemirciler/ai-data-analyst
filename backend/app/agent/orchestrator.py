@@ -6,6 +6,8 @@ import math
 from .safety import validate_code
 from .sandbox import execute_analysis_script
 from .llm import generate_analysis_code
+from ..config import settings
+from .output_parser import _build_html_table
 from ..logging_utils import (
     log_orchestrator_stage,
     log_final_decision,
@@ -95,15 +97,36 @@ def run_agent_response(
 
             # Collect LLM chunks into a single response
             llm_chunks = []
+            max_answer_chars = int(getattr(settings, "summary_max_answer_chars", 0) or 0)
             for chunk in stream_summary_chunks(
                 session_payload, user_message, exec_result, code
             ):
                 llm_chunks.append(chunk)
-                if len("".join(llm_chunks)) > 4000:  # Prevent runaway responses
+                if max_answer_chars > 0 and len("".join(llm_chunks)) > max_answer_chars:
                     break
 
             if llm_chunks:
                 answer = "".join(llm_chunks)
+                # Prepend normalized HTML tables so they always render in the UI
+                structured = exec_result.get("structured") or {}
+                tables = (structured.get("tables") if isinstance(structured, dict) else None) or []
+                if tables:
+                    mt = int(getattr(settings, "summary_max_tables", 5))
+                    mr = int(getattr(settings, "summary_max_rows", 50))
+                    mc = int(getattr(settings, "summary_max_cols", 15))
+                    html_parts: List[str] = []
+                    for t in tables[:mt]:
+                        title = (t.get("title") or "").strip()
+                        if title:
+                            html_parts.append(f"<p><strong>Title: {title}</strong></p>")
+                        cols = t.get("columns") or []
+                        rows = t.get("rows") or []
+                        tcols = cols[:mc] if cols else cols
+                        trows = [r[:mc] for r in rows[:mr]]
+                        html_parts.append(_build_html_table(tcols, trows))
+                    preface = "\n\n".join(html_parts)
+                    if preface:
+                        answer = preface + "\n\n" + answer
                 log_final_decision("llm_summary", len(answer))
             else:
                 # Empty LLM response, fall back to exec logs + heuristic

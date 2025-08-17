@@ -7,11 +7,97 @@ import textwrap
 
 from ..config import settings
 from ..logging_utils import log_sandbox_execution, log_error
+import re
 
 try:  # pragma: no cover - docker optional
     import docker  # type: ignore
 except Exception:  # pragma: no cover - no docker installed
     docker = None  # type: ignore
+
+
+def _smart_truncate_logs(logs: str, max_chars: int = 8000) -> str:
+    """Intelligently truncate logs preserving table boundaries and key content.
+    
+    Priority order:
+    1. Complete HTML tables (preserve table integrity)
+    2. Section headers (## Overview, ## Results, etc.)
+    3. Key statistics and metrics
+    4. Error messages
+    5. General content from beginning and end
+    """
+    if len(logs) <= max_chars:
+        return logs
+    
+    # Extract complete HTML tables first
+    table_matches = list(re.finditer(r"<table[^>]*>.*?</table>", logs, re.DOTALL | re.IGNORECASE))
+    tables = []
+    table_chars = 0
+    
+    for match in table_matches:
+        table_content = match.group(0)
+        if table_chars + len(table_content) < max_chars * 0.7:  # Reserve 70% for tables
+            tables.append((match.start(), match.end(), table_content))
+            table_chars += len(table_content)
+    
+    # Extract section headers and key content
+    header_pattern = r"^##\s+[^\n]+$"
+    headers = []
+    for match in re.finditer(header_pattern, logs, re.MULTILINE):
+        start = max(0, match.start() - 50)  # Include some context
+        end = min(len(logs), match.end() + 200)
+        headers.append((start, end, logs[start:end]))
+    
+    # Build preserved content
+    preserved_ranges = sorted(tables + headers, key=lambda x: x[0])
+    
+    # Merge overlapping ranges
+    merged = []
+    for start, end, content in preserved_ranges:
+        if merged and start <= merged[-1][1] + 100:  # Merge if close
+            merged[-1] = (merged[-1][0], max(end, merged[-1][1]), 
+                         logs[merged[-1][0]:max(end, merged[-1][1])])
+        else:
+            merged.append((start, end, content))
+    
+    # Calculate remaining budget for head/tail
+    preserved_chars = sum(len(content) for _, _, content in merged)
+    remaining_budget = max_chars - preserved_chars - 200  # Reserve for separators
+    
+    if remaining_budget > 0:
+        head_budget = remaining_budget // 3
+        tail_budget = remaining_budget - head_budget
+        
+        # Get head content (avoiding overlap with preserved)
+        head_end = merged[0][0] if merged else len(logs)
+        head = logs[:min(head_budget, head_end)]
+        
+        # Get tail content (avoiding overlap with preserved)
+        tail_start = merged[-1][1] if merged else 0
+        tail = logs[max(tail_start, len(logs) - tail_budget):]
+    else:
+        head = tail = ""
+    
+    # Assemble final result
+    parts = []
+    if head:
+        parts.append(head)
+        parts.append("\n\n[... content preserved for key sections ...]\n\n")
+    
+    for _, _, content in merged:
+        parts.append(content)
+        parts.append("\n\n")
+    
+    if tail and tail != head:
+        parts.append("[... content continues ...]\n\n")
+        parts.append(tail)
+    
+    result = "".join(parts)
+    
+    # Final safety truncation if still over budget
+    if len(result) > max_chars:
+        result = result[:max_chars - 50] + "\n\n[... truncated ...]"
+    
+    return result
 
 
 def execute_analysis_script(
@@ -114,7 +200,7 @@ def execute_analysis_script(
             result = {
                 "status": status,
                 "exit_code": exit_code,
-                "logs": logs[-4000:],  # trim
+                "logs": _smart_truncate_logs(logs, max_chars=8000),
             }
             log_sandbox_execution(result)
             return result

@@ -215,7 +215,7 @@ async def chat_ws(websocket: WebSocket):
                 ):
                     accumulated_answer += chunk
                     await websocket.send_json({"type": "content", "value": chunk})
-                    if len(accumulated_answer) > 4000:  # Prevent runaway responses
+                    if len(accumulated_answer) > 12000:  # Prevent runaway responses
                         break
             else:
                 # If sandbox is disabled or failed, generate explanations based on the code itself
@@ -230,7 +230,7 @@ async def chat_ws(websocket: WebSocket):
                 ):
                     accumulated_answer += chunk
                     await websocket.send_json({"type": "content", "value": chunk})
-                    if len(accumulated_answer) > 4000:  # Prevent runaway responses
+                    if len(accumulated_answer) > 12000:  # Prevent runaway responses
                         break
 
             final_answer = accumulated_answer

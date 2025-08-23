@@ -22,6 +22,8 @@ Heuristics only; designed to be robust to noisy logs and avoid external deps.
 import re
 from html import escape
 from typing import Any, Dict, List, Tuple
+import json
+from ..config import settings
 
 
 def _trim_table(columns: List[str], rows: List[List[str]], max_rows: int, max_cols: int) -> Tuple[List[str], List[List[str]]]:
@@ -232,6 +234,108 @@ def _extract_tabular_data_from_text(logs: str) -> List[Tuple[List[str], List[Lis
     return tables
 
 
+def parse_json_block(
+    logs: str,
+    *,
+    max_tables: int = 5,
+    max_rows: int = 50,
+    max_cols: int = 15,
+) -> Dict[str, Any] | None:
+    """Parse a structured JSON result block delimited by configured markers.
+
+    Returns a normalized dict with keys tables, stats, messages if found; else None.
+    """
+    begin_marker = settings.json_marker_begin
+    end_marker = settings.json_marker_end
+
+    b = logs.rfind(begin_marker)
+    if b == -1:
+        return None
+    e = logs.find(end_marker, b + len(begin_marker))
+    if e == -1:
+        return None
+    content = logs[b + len(begin_marker):e].strip()
+    # Strip optional code fences
+    content = re.sub(r"^```(?:json)?\s*", "", content)
+    content = re.sub(r"\s*```$", "", content)
+    try:
+        data = json.loads(content)
+    except Exception:
+        return None
+
+    if not isinstance(data, dict):
+        return None
+
+    # Extract core sections
+    raw_tables = data.get("tables") or []
+    raw_stats = data.get("stats") or data.get("statistics") or []
+    raw_messages = data.get("messages") or []
+    raw_errors = data.get("errors") or []
+
+    tables: List[Dict[str, Any]] = []
+    for t in raw_tables:
+        if not isinstance(t, dict):
+            continue
+        title = t.get("title")
+        cols = t.get("columns") or []
+        rows = t.get("rows") or []
+        # Compute original sizes when not provided
+        try:
+            n_rows = int(t.get("n_rows", len(rows)))
+        except Exception:
+            n_rows = len(rows)
+        try:
+            n_cols = int(t.get("n_cols", max((len(r) for r in rows), default=len(cols))))
+        except Exception:
+            n_cols = max((len(r) for r in rows), default=len(cols))
+
+        # Preserve full rows/cols from JSON without trimming for fidelity
+        full_cols = list(map(str, cols))
+        full_rows = [[str(v) for v in r] for r in rows]
+
+        # Build normalized HTML as fallback (using full data)
+        html_norm = _build_html_table(full_cols, full_rows)
+
+        # Prefer raw HTML from JSON if present; fallback to normalized full HTML
+        raw_html = t.get("html")
+        html_out = raw_html if isinstance(raw_html, str) and raw_html.strip() else html_norm
+
+        tables.append({
+            "html": html_out,
+            "columns": full_cols,
+            "rows": full_rows,
+            "n_rows": n_rows,
+            "n_cols": n_cols,
+            "source": "json",
+            "title": title,
+        })
+        if len(tables) >= max_tables:
+            break
+
+    # Sanitize stats
+    stats: List[Dict[str, str]] = []
+    for s in raw_stats:
+        if isinstance(s, dict) and "name" in s and "value" in s:
+            stats.append({"name": str(s["name"]), "value": str(s["value"])})
+        elif isinstance(s, (list, tuple)) and len(s) == 2:
+            stats.append({"name": str(s[0]), "value": str(s[1])})
+
+    # Merge messages and errors (errors prefixed)
+    messages: List[str] = []
+    for m in raw_messages:
+        try:
+            messages.append(str(m))
+        except Exception:
+            continue
+    for err in raw_errors:
+        try:
+            messages.append(f"ERROR: {str(err)}")
+        except Exception:
+            continue
+
+    return {"tables": tables, "stats": stats, "messages": messages}
+
+
 def parse_exec_output(logs: str, *, max_tables: int = 5, max_rows: int = 50, max_cols: int = 15) -> Dict[str, Any]:
     """Parse execution logs to extract structured outputs.
 
@@ -240,6 +344,25 @@ def parse_exec_output(logs: str, *, max_tables: int = 5, max_rows: int = 50, max
     
     Enhanced with fallback mechanisms for partial/malformed tables.
     """
+    # JSON-first path
+    if settings.enable_json_first:
+        json_res = parse_json_block(
+            logs, max_tables=max_tables, max_rows=max_rows, max_cols=max_cols
+        )
+        if json_res is not None:
+            head = logs[:800]
+            tail = logs[-800:] if len(logs) > 800 else ""
+            mid = None
+            for kw in ("Metric", "Variance Table", "DataFrame", "describe", "GroupBy", "Total"):
+                idx = logs.find(kw)
+                if idx != -1:
+                    start = max(0, idx - 600)
+                    end = min(len(logs), idx + 600)
+                    mid = logs[start:end]
+                    break
+            json_res["excerpts"] = {"head": head, "mid": mid, "tail": tail}
+            return json_res
+
     tables: List[Dict[str, Any]] = []
     stats: List[Dict[str, str]] = []
     messages: List[str] = []
@@ -293,7 +416,7 @@ def parse_exec_output(logs: str, *, max_tables: int = 5, max_rows: int = 50, max
         tcols, trows = _trim_table(cols, rows, max_rows, max_cols)
         html_norm = _build_html_table(tcols, trows)
         tables.append({
-            "html": html_norm,
+            "html": html_tbl,
             "columns": tcols,
             "rows": trows,
             "n_rows": n_rows,

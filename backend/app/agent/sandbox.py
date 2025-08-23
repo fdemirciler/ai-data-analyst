@@ -15,7 +15,7 @@ except Exception:  # pragma: no cover - no docker installed
     docker = None  # type: ignore
 
 
-def _smart_truncate_logs(logs: str, max_chars: int = 8000) -> str:
+def _smart_truncate_logs(logs: str, max_chars: int = 16000) -> str:
     """Intelligently truncate logs preserving table boundaries and key content.
     
     Priority order:
@@ -27,6 +27,24 @@ def _smart_truncate_logs(logs: str, max_chars: int = 8000) -> str:
     """
     if len(logs) <= max_chars:
         return logs
+
+    # Always attempt to fully preserve a JSON result block if present
+    begin_marker = settings.json_marker_begin
+    end_marker = settings.json_marker_end
+    json_range: tuple[int, int, str] | None = None
+    b = logs.rfind(begin_marker)
+    if b != -1:
+        e = logs.find(end_marker, b + len(begin_marker))
+        if e != -1:
+            e += len(end_marker)
+            json_range = (b, e, logs[b:e])
+
+    # Expand effective budget to avoid truncating the JSON block
+    budget = max_chars
+    if json_range is not None:
+        json_len = len(json_range[2])
+        # Add small slack for separators
+        budget = max(max_chars, json_len + 200)
     
     # Extract complete HTML tables first
     table_matches = list(re.finditer(r"<table[^>]*>.*?</table>", logs, re.DOTALL | re.IGNORECASE))
@@ -35,7 +53,7 @@ def _smart_truncate_logs(logs: str, max_chars: int = 8000) -> str:
     
     for match in table_matches:
         table_content = match.group(0)
-        if table_chars + len(table_content) < max_chars * 0.7:  # Reserve 70% for tables
+        if table_chars + len(table_content) < budget * 0.7:  # Reserve 70% for tables
             tables.append((match.start(), match.end(), table_content))
             table_chars += len(table_content)
     
@@ -47,8 +65,11 @@ def _smart_truncate_logs(logs: str, max_chars: int = 8000) -> str:
         end = min(len(logs), match.end() + 200)
         headers.append((start, end, logs[start:end]))
     
-    # Build preserved content
-    preserved_ranges = sorted(tables + headers, key=lambda x: x[0])
+    # Build preserved content (JSON first if present)
+    preserved_candidates = tables + headers
+    if json_range is not None:
+        preserved_candidates.append(json_range)
+    preserved_ranges = sorted(preserved_candidates, key=lambda x: x[0])
     
     # Merge overlapping ranges
     merged = []
@@ -61,7 +82,7 @@ def _smart_truncate_logs(logs: str, max_chars: int = 8000) -> str:
     
     # Calculate remaining budget for head/tail
     preserved_chars = sum(len(content) for _, _, content in merged)
-    remaining_budget = max_chars - preserved_chars - 200  # Reserve for separators
+    remaining_budget = budget - preserved_chars - 200  # Reserve for separators
     
     if remaining_budget > 0:
         head_budget = remaining_budget // 3
@@ -93,9 +114,16 @@ def _smart_truncate_logs(logs: str, max_chars: int = 8000) -> str:
     
     result = "".join(parts)
     
-    # Final safety truncation if still over budget
-    if len(result) > max_chars:
-        result = result[:max_chars - 50] + "\n\n[... truncated ...]"
+    # Final safety truncation if still over budget.
+    # Never truncate inside the JSON block: drop non-JSON parts first.
+    if len(result) > budget:
+        if json_range is not None:
+            # Keep only the JSON block if necessary
+            result = json_range[2]
+            # If still somehow over budget (very large JSON), keep JSON intact
+            # by allowing it to exceed the nominal budget.
+        else:
+            result = result[: budget - 50] + "\n\n[... truncated ...]"
     
     return result
 
@@ -200,7 +228,10 @@ def execute_analysis_script(
             result = {
                 "status": status,
                 "exit_code": exit_code,
-                "logs": _smart_truncate_logs(logs, max_chars=8000),
+                "logs": _smart_truncate_logs(
+                    logs,
+                    max_chars=int(getattr(settings, "sandbox_max_log_chars", 16000)),
+                ),
             }
             log_sandbox_execution(result)
             return result

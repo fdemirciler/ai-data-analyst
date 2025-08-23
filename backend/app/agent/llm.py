@@ -56,16 +56,20 @@ def generate_analysis_code(
             "- Use only pandas, numpy, and basic Python - no external packages\n"
             "- DO NOT write any files or make network calls\n"
             "- Print clear, formatted results that directly answer the question\n"
+            "- Do NOT sample or use head()/tail() for final outputs; include ALL relevant rows requested\n"
             "- For lists/values: Display the actual data, not just counts or descriptions\n"
             "- For comparisons: Calculate differences and percentage changes\n"
             "- Format numbers appropriately (commas, decimals)\n"
             "- Include column headers and meaningful labels in output\n\n"
-            "OUTPUT FORMAT:\n"
-            "- Print section headings to structure output (e.g., '## Overview', '## Results', '## Key Insights').\n"
-            "- Use short bullet points for lists; emphasize key values with **bold**.\n"
-            "- When printing tables, use HTML via pandas DataFrame.to_html(index=False); avoid Markdown/ASCII tables.\n"
-            "- Format numeric columns with proper separators: df.style.format({'col': '{:,.2f}'}).to_html() for decimals, '{:,}' for integers.\n"
-            "- Print a 'Title: <...>' line immediately before any related table when appropriate.\n\n"
+            "OUTPUT FORMAT (JSON-FIRST):\n"
+            f"- At the end, print a single JSON result block delimited by '{settings.json_marker_begin}' and '{settings.json_marker_end}'.\n"
+            "- The JSON must be a dict: {version:'1.0', tables:[{title, columns, rows, n_rows, n_cols, html}], stats:[{name,value}], messages:[], errors:[]}\n"
+            "- Ensure FULL table rendering: set pandas to avoid truncation (e.g., pd.set_option('display.max_rows', None); pd.set_option('display.max_columns', None)).\n"
+            "- Include HTML tables using pandas DataFrame.to_html(index=False, max_rows=None, max_cols=None) and set them under tables[*].html.\n"
+            "- Keep other printed noise to a minimum; the JSON block is the source of truth.\n\n"
+            "HUMAN-READABLE PRINTS (optional):\n"
+            "- You may print section headings (e.g., '## Results') and brief bullets before the JSON block if helpful.\n"
+            "- Prefer HTML tables if you print any tables outside JSON.\n\n"
             "NAMING CONVENTIONS:\n"
             "- When aggregating across year-like columns (e.g., 2022, 2023, ...), name the dimension column 'Year' (not 'Metric').\n"
             "- When listing metric names from a label column, use 'Metric' as the label column.\n\n"
@@ -80,7 +84,11 @@ def generate_analysis_code(
             f"User Question: {question}\n"
             f"Analysis Plan: {plan}\n\n"
             f"Dataset Schema:\n{schema_summary}\n\n"
-            "Generate a complete Python script that loads the data and produces a comprehensive analysis that fully answers the user's question with actual data:"
+            "Generate a complete Python script that loads the data and produces a comprehensive analysis that fully answers the user's question with actual data.\n"
+            "At the end of the script, construct a 'result' dict and print the JSON block exactly like this (adapt to your variables):\n"
+            f"print('{settings.json_marker_begin}')\n"
+            "print(json.dumps(result, ensure_ascii=False))\n"
+            f"print('{settings.json_marker_end}')\n"
         )
 
         log_llm_generation(f"LLM ({settings.llm_provider}) - Prompt preview", 0, False)
@@ -204,7 +212,6 @@ def stream_summary_chunks(
     try:
         client = _get_llm_client(settings.llm_provider)
 
-        schema_summary = _build_schema_summary(session_payload)
         logs_full = (exec_result or {}).get("logs", "") or ""
         status = (exec_result or {}).get("status", "n/a")
         code = generated_code or ""
@@ -223,135 +230,63 @@ def stream_summary_chunks(
         except Exception:
             pass
 
-        # Helper to build HTML tables string with limits
-        def build_tables_html(tables: list[dict], mt: int, mr: int, mc: int) -> str:
+        # Helper to build HTML tables string with limits, preferring raw HTML unless it appears truncated
+        def build_tables_html(tables: list[dict], mt: int) -> str:
             html_parts: list[str] = []
+
+            def _html_row_count(s: str) -> int:
+                if not isinstance(s, str) or not s.strip():
+                    return 0
+                m = re.search(r"<tbody[^>]*>(.*?)</tbody>", s, re.I | re.S)
+                segment = m.group(1) if m else s
+                return len(re.findall(r"<tr[^>]*>", segment, re.I))
+
             for t in (tables or [])[: mt if mt > 0 else 0]:
-                cols = t.get("columns") or []
-                rows = t.get("rows") or []
-                tcols = cols[:mc] if cols else cols
-                trows = [r[:mc] for r in rows[:mr]]
                 title = (t.get("title") or "").strip()
                 if title:
                     html_parts.append(f"Title: {title}\n")
-                html_parts.append(_build_html_table(tcols, trows))
+                raw_html = t.get("html")
+                cols = t.get("columns") or []
+                rows = t.get("rows") or []
+                # prefer raw html, but detect truncation vs reported/available rows
+                n_rows = 0
+                try:
+                    n_rows = int(t.get("n_rows") or (len(rows) if isinstance(rows, list) else 0))
+                except Exception:
+                    n_rows = len(rows) if isinstance(rows, list) else 0
+
+                if isinstance(raw_html, str) and raw_html.strip():
+                    html_rows = _html_row_count(raw_html)
+                    target_rows = n_rows or (len(rows) if isinstance(rows, list) else 0)
+                    if target_rows and html_rows and html_rows < target_rows and rows:
+                        # Rebuild from full rows to avoid truncated HTML
+                        html_parts.append(_build_html_table(cols, rows))
+                    else:
+                        html_parts.append(raw_html.strip())
+                else:
+                    html_parts.append(_build_html_table(cols, rows))
             return "\n\n".join(html_parts)
 
-        # Collect stats and messages
-        stats_items = structured.get("stats", []) if structured else []
-        messages = structured.get("messages", []) if structured else []
+        # Collect excerpts for fallback only
         excerpts = structured.get("excerpts", {}) if structured else {}
 
-        # Initial limits from settings
+        # Initial limits from settings (only number of tables matters for the prompt)
         max_tables = int(settings.summary_max_tables)
-        max_rows = int(settings.summary_max_rows)
-        max_cols = int(settings.summary_max_cols)
-        err_limit = int(settings.summary_include_errors_limit)
         budget = int(settings.summary_prompt_char_budget)
 
-        detected_periods = _detect_period_labels_from_logs(logs_full)
-
-        # Build column semantics from schema metadata
-        cols_meta = session_payload.get("columns", {}) or {}
-        def _dtype_of(m: dict) -> str:
-            return str(
-                m.get("type")
-                or m.get("detected_type")
-                or (m.get("stats", {}) or {}).get("dtype")
-                or ""
-            ).lower()
-
-        text_like_cols = [
-            name
-            for name, meta in cols_meta.items()
-            if any(k in _dtype_of(meta) for k in ("object", "string", "category", "text", "str"))
-        ]
-        numeric_like_cols = [
-            name
-            for name, meta in cols_meta.items()
-            if any(k in _dtype_of(meta) for k in ("int", "float", "number", "numeric"))
-        ]
-        year_like_cols = [
-            name for name in cols_meta.keys() if re.fullmatch(r"(19|20)\d{2}", str(name))
-        ]
-        metric_col_name = next((n for n in cols_meta.keys() if str(n).lower() == "metric"), None)
-
-        # Function to assemble the prompt with current limits
-        def assemble_prompt(mt: int, mr: int, mc: int) -> str:
-            tables_html = build_tables_html(structured.get("tables", []), mt, mr, mc)
-            # Build compact stats bullets
-            stats_lines = "\n".join(
-                f"- {s.get('name')}: {s.get('value')}" for s in (stats_items or [])
-            )
-            # Recent error/warning lines
-            errs = messages[-err_limit:] if err_limit > 0 else []
-            errs_text = "\n".join(f"- {m}" for m in errs)
-
+        # Function to assemble the prompt with current limits (simplified)
+        def assemble_prompt(mt: int) -> str:
+            tables_html = build_tables_html(structured.get("tables", []), mt)
             prompt_parts = [
-                "You are a senior data analyst providing insights based on script execution results.\n\n",
-                
-                "ANALYSIS APPROACH:\n",
-                "1. PRIORITIZE EXECUTION OUTPUT: Use the provided structured results as your primary source.\n",
-                "2. PROVIDE CONTEXT: Use the dataset schema to add interpretation.\n",
-                "3. ANSWER THE QUESTION: Be direct and use the actual values shown.\n\n",
-                "STRICT DATA HANDLING:\n",
-                "- Use exact headers/period labels from the provided tables; do NOT invent years or columns.\n",
-                "- Keep NaN as NaN; do not fabricate values.\n\n",
-                
+                "You are a senior data analyst. Base your answer only on the execution output below.\n\n",
                 "RESPONSE FORMAT:\n",
-                "- **Primary Goal**: Your main purpose is to interpret the data provided below and answer the user's question directly.\n"
-                "- **Structure**: Organize your response with clear markdown headings (e.g., `## Overview`, `## Key Findings`).\n"
-                "- **Tone**: Write in a clear, professional, and analytical tone. Use concise bullet points and bold formatting (`**text**`) to highlight key metrics, trends, and insights.\n"
-                "- **Data Interpretation**: Do not simply repeat the data from the tables. Explain what the numbers *mean*. For example, instead of saying 'Sales were $100', say '**Sales increased by 25%** ($80 to $100), driven by strong performance in the new product line.'\n"
-                "- **Table Handling**: The table MUST be in HTML format (using `<table>`, `<tr>`, `<th>`, `<td>`).\n\n",
-               
-               f"User Question: {question}\n",
-                f"Dataset Context: {schema_summary}\n\n",
-               
-                "COLUMN SEMANTICS (from dataset schema):\n",
-                (
-                    (
-                        f"- Label column for metrics: '{metric_col_name}'\n"
-                        if metric_col_name
-                        else ""
-                    )
-                    + (
-                        f"- Text-like columns: {', '.join(map(str, text_like_cols[:12]))}\n"
-                        if text_like_cols
-                        else ""
-                    )
-                    + (
-                        f"- Year-like columns: {', '.join(map(str, year_like_cols[:12]))}\n"
-                        if year_like_cols
-                        else ""
-                    )
-                    + (
-                        f"- Numeric columns: {', '.join(map(str, numeric_like_cols[:12]))}\n"
-                        if numeric_like_cols
-                        else ""
-                    )
-                    + (
-                        "- For questions about 'metrics', prefer tables where the label column lists metric names (not years).\n"
-                    )
-                    + (
-                        "- If a table header says 'Metric' but values are 4-digit years, interpret that column as 'Year' for orientation (keep values as-is).\n\n"
-                    )
-                ),
-                "## Key Findings\n",
-                "- Summarize the primary results from the structured output.\n\n",
+                "- Use clear markdown section headings (e.g., ## Overview, ## Key Findings).\n",
+                "- Any tables in your response must be HTML-only (<table>, <tr>, <th>, <td>).\n",
+                "- Keep values faithful to the data; do not invent columns or periods.\n\n",
+                f"User Question: {question}\n\n",
                 "## Structured Execution Output\n",
                 (tables_html + "\n\n") if tables_html else "(No tables detected)\n\n",
             ]
-            if stats_lines:
-                prompt_parts += [
-                    "## Key Statistics\n",
-                    stats_lines + "\n\n",
-                ]
-            if errs_text:
-                prompt_parts += [
-                    "## Errors/Warnings (recent)\n",
-                    errs_text + "\n\n",
-                ]
             # Fallback excerpts if no tables
             if not tables_html:
                 head = (excerpts or {}).get("head") or ""
@@ -363,62 +298,72 @@ def stream_summary_chunks(
                     ("MIDDLE:\n" + mid + "\n\n") if mid else "",
                     ("END:\n" + tail + "\n\n") if tail else "",
                 ]
-            if detected_periods:
-                prompt_parts.append(
-                    f"DETECTED PERIOD LABELS (from output): {', '.join(detected_periods)}\n\n"
-                )
             prompt_parts.append(
-                f"GENERATED CODE (context only, do not re-run):\n```python\n{code[:1200]}\n```\n\n"
-            )
-            prompt_parts.append(
-                "Provide a clear answer that directly addresses the user's question, using the data shown above."
+                "Provide a concise, accurate answer that directly addresses the question using the data above."
             )
             return "".join(prompt_parts)
 
-        # Assemble and adaptively downscale if over budget
-        prompt = assemble_prompt(max_tables, max_rows, max_cols)
+        # Assemble and adaptively downscale if over budget (prefer keeping first table intact)
+        initial_limits = {"max_tables": max_tables}
+        prompt = assemble_prompt(max_tables)
+        downscaled = False
         if len(prompt) > budget:
-            # Reduction steps for rows, then cols, then tables
-            row_steps = [50, 30, 15, 10, 5]
-            col_steps = [15, 10, 8, 6, 5]
-            table_steps = [5, 3, 2, 1]
-            # Find current indices
-            r_idx = 0
-            c_idx = 0
+            # Reduce only the number of tables
+            table_steps = [max_tables, 3, 2, 1]
             t_idx = 0
-            # Move to current/equal step
-            while r_idx < len(row_steps) and row_steps[r_idx] > max_rows:
-                r_idx += 1
-            while c_idx < len(col_steps) and col_steps[c_idx] > max_cols:
-                c_idx += 1
             while t_idx < len(table_steps) and table_steps[t_idx] > max_tables:
                 t_idx += 1
-            # Try reducing progressively
-            for r_try in range(r_idx, len(row_steps)):
-                prompt = assemble_prompt(max_tables, row_steps[r_try], max_cols)
+            for t_try in range(t_idx, len(table_steps)):
+                prompt = assemble_prompt(table_steps[t_try])
                 if len(prompt) <= budget:
-                    max_rows = row_steps[r_try]
+                    max_tables = table_steps[t_try]
+                    downscaled = True
                     break
-            if len(prompt) > budget:
-                for c_try in range(c_idx, len(col_steps)):
-                    prompt = assemble_prompt(max_tables, max_rows, col_steps[c_try])
-                    if len(prompt) <= budget:
-                        max_cols = col_steps[c_try]
-                        break
-            if len(prompt) > budget:
-                for t_try in range(t_idx, len(table_steps)):
-                    prompt = assemble_prompt(table_steps[t_try], max_rows, max_cols)
-                    if len(prompt) <= budget:
-                        max_tables = table_steps[t_try]
-                        break
             # Final assemble with the best limits found
-            prompt = assemble_prompt(max_tables, max_rows, max_cols)
+            prompt = assemble_prompt(max_tables)
 
         # Log the prompt for debugging
         log_llm_generation(
             f"Summary LLM ({settings.llm_provider}) prompt preview", len(prompt), True
         )
         print(f"DEBUG SUMMARY PROMPT: {prompt[:500]}...")
+
+        # Observability: parse path and prompt metrics
+        try:
+            tables_for_path = (structured or {}).get("tables", []) if isinstance(structured, dict) else []
+            sources = {t.get("source") for t in tables_for_path if isinstance(t, dict)}
+            if "json" in sources:
+                parse_path = "json"
+            elif "html" in sources:
+                parse_path = "html"
+            elif "markdown" in sources:
+                parse_path = "markdown"
+            elif "ascii" in sources:
+                parse_path = "ascii"
+            elif "text_fallback" in sources:
+                parse_path = "text_fallback"
+            else:
+                parse_path = "none"
+            obs = {
+                "parse_path": parse_path,
+                "prompt_chars": len(prompt),
+                "budget": budget,
+                "initial_limits": initial_limits,
+                "final_limits": {"max_tables": max_tables},
+                "downscaled": downscaled,
+                "table_count": len(tables_for_path),
+            }
+            # Attach to exec_result for downstream visibility
+            if isinstance(exec_result, dict):
+                exec_result.setdefault("observability", {})["summary"] = obs
+            # Also log a compact line
+            log_llm_generation(
+                f"OBS parse_path={parse_path} prompt={len(prompt)}/{budget} downscaled={downscaled} limits={obs['final_limits']}",
+                len(prompt),
+                True,
+            )
+        except Exception:
+            pass
 
         text = None
         if settings.llm_provider == "google":

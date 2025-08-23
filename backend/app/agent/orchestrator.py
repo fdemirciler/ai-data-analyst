@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from typing import Dict, Any, List, Tuple
 import math
+import re
 
 from .safety import validate_code
 from .sandbox import execute_analysis_script
 from .llm import generate_analysis_code
+from .response_sanitizer import sanitize_answer_html_tables
 from ..config import settings
 from .output_parser import _build_html_table
 from ..logging_utils import (
@@ -107,7 +109,7 @@ def run_agent_response(
 
             if llm_chunks:
                 answer = "".join(llm_chunks)
-                # Prepend normalized HTML tables so they always render in the UI
+                # Prepend tables (prefer raw HTML when available) so they render in the UI
                 structured = exec_result.get("structured") or {}
                 tables = (structured.get("tables") if isinstance(structured, dict) else None) or []
                 if tables:
@@ -115,15 +117,40 @@ def run_agent_response(
                     mr = int(getattr(settings, "summary_max_rows", 50))
                     mc = int(getattr(settings, "summary_max_cols", 15))
                     html_parts: List[str] = []
+
+                    def _html_row_count(s: str) -> int:
+                        if not isinstance(s, str) or not s.strip():
+                            return 0
+                        m = re.search(r"<tbody[^>]*>(.*?)</tbody>", s, re.I | re.S)
+                        segment = m.group(1) if m else s
+                        return len(re.findall(r"<tr[^>]*>", segment, re.I))
+
                     for t in tables[:mt]:
                         title = (t.get("title") or "").strip()
                         if title:
                             html_parts.append(f"<p><strong>Title: {title}</strong></p>")
+                        raw_html = t.get("html")
                         cols = t.get("columns") or []
                         rows = t.get("rows") or []
-                        tcols = cols[:mc] if cols else cols
-                        trows = [r[:mc] for r in rows[:mr]]
-                        html_parts.append(_build_html_table(tcols, trows))
+                        # Prefer raw html unless it appears truncated vs reported rows
+                        try:
+                            n_rows = int(t.get("n_rows") or (len(rows) if isinstance(rows, list) else 0))
+                        except Exception:
+                            n_rows = len(rows) if isinstance(rows, list) else 0
+
+                        if isinstance(raw_html, str) and raw_html.strip():
+                            html_rows = _html_row_count(raw_html)
+                            target_rows = n_rows or (len(rows) if isinstance(rows, list) else 0)
+                            if target_rows and html_rows and html_rows < target_rows and rows:
+                                # Rebuild from FULL rows/cols (untrimmed) to avoid truncated HTML
+                                html_parts.append(_build_html_table(cols, rows))
+                            else:
+                                html_parts.append(raw_html.strip())
+                        else:
+                            # Fallback to a trimmed rebuild if no raw HTML is available
+                            tcols = cols[:mc] if cols else cols
+                            trows = [r[:mc] for r in rows[:mr]]
+                            html_parts.append(_build_html_table(tcols, trows))
                     preface = "\n\n".join(html_parts)
                     if preface:
                         answer = preface + "\n\n" + answer
@@ -167,6 +194,14 @@ def run_agent_response(
         heuristic = run_basic_analysis(session_payload, user_message)
         answer = heuristic + f"\n\n(Exec status: {exec_result.get('status', 'n/a')})"
         log_final_decision("heuristic_fallback", len(answer))
+
+    # Response sanitization (HTML-only tables enforcement)
+    try:
+        if getattr(settings, "enable_response_sanitizer", False):
+            answer = sanitize_answer_html_tables(answer)
+    except Exception:
+        # Do not block on sanitizer errors
+        pass
 
     progress.append("completed")
     log_orchestrator_stage("completed", f"Final answer length: {len(answer)}")

@@ -37,12 +37,25 @@ class Settings(BaseModel):
 
     # Structured Summary / Prompt composition
     summary_max_tables: int = 5
-    summary_max_rows: int = 50
+    summary_max_rows: int = 100
     summary_max_cols: int = 15
-    summary_prompt_char_budget: int = 60000
+    summary_prompt_char_budget: int = 12000
     summary_include_errors_limit: int = 5
     # Max length for summarized LLM answer text (aggregated), 0 disables cap
     summary_max_answer_chars: int = 12000
+
+    # Sandbox / Truncation
+    sandbox_max_log_chars: int = 16000
+
+    # JSON-first structured output
+    enable_json_first: bool = True
+    strict_json_only: bool = False
+    json_marker_begin: str = "<<<AI_DA_JSON_BEGIN>>>"
+    json_marker_end: str = "<<<AI_DA_JSON_END>>>"
+    json_include_html: bool = True
+
+    # Response sanitization
+    enable_response_sanitizer: bool = True
 
     model_config = {"arbitrary_types_allowed": True, "protected_namespaces": ()}
 
@@ -99,17 +112,17 @@ def load_settings() -> Settings:
     except Exception:
         sum_max_tables = 5
     try:
-        sum_max_rows = int(os.getenv("SUMMARY_MAX_ROWS", "50"))
+        sum_max_rows = int(os.getenv("SUMMARY_MAX_ROWS", "100"))
     except Exception:
-        sum_max_rows = 50
+        sum_max_rows = 100
     try:
         sum_max_cols = int(os.getenv("SUMMARY_MAX_COLS", "15"))
     except Exception:
         sum_max_cols = 15
     try:
-        sum_prompt_budget = int(os.getenv("SUMMARY_PROMPT_CHAR_BUDGET", "60000"))
+        sum_prompt_budget = int(os.getenv("SUMMARY_PROMPT_CHAR_BUDGET", "12000"))
     except Exception:
-        sum_prompt_budget = 60000
+        sum_prompt_budget = 12000
     try:
         sum_err_limit = int(os.getenv("SUMMARY_INCLUDE_ERRORS_LIMIT", "5"))
     except Exception:
@@ -118,6 +131,20 @@ def load_settings() -> Settings:
         sum_max_answer_chars = int(os.getenv("SUMMARY_MAX_ANSWER_CHARS", "12000"))
     except Exception:
         sum_max_answer_chars = 12000
+
+    # Sandbox truncation budget
+    try:
+        sandbox_max_log_chars = int(os.getenv("SANDBOX_MAX_LOG_CHARS", "16000"))
+    except Exception:
+        sandbox_max_log_chars = 16000
+
+    # JSON-first flags and markers
+    enable_json_first = _env_bool("ENABLE_JSON_FIRST", True)
+    strict_json_only = _env_bool("STRICT_JSON_ONLY", False)
+    json_marker_begin = os.getenv("JSON_MARKER_BEGIN", "<<<AI_DA_JSON_BEGIN>>>")
+    json_marker_end = os.getenv("JSON_MARKER_END", "<<<AI_DA_JSON_END>>>")
+    json_include_html = _env_bool("JSON_INCLUDE_HTML", True)
+    enable_response_sanitizer = _env_bool("ENABLE_RESPONSE_SANITIZER", True)
 
     return Settings(
         environment=os.getenv("ENV", "dev"),
@@ -148,6 +175,13 @@ def load_settings() -> Settings:
         summary_prompt_char_budget=sum_prompt_budget,
         summary_include_errors_limit=sum_err_limit,
         summary_max_answer_chars=sum_max_answer_chars,
+        sandbox_max_log_chars=sandbox_max_log_chars,
+        enable_json_first=enable_json_first,
+        strict_json_only=strict_json_only,
+        json_marker_begin=json_marker_begin,
+        json_marker_end=json_marker_end,
+        json_include_html=json_include_html,
+        enable_response_sanitizer=enable_response_sanitizer,
     )
 
 

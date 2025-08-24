@@ -6,11 +6,14 @@ Lightweight parser for extracting structured analysis results from execution log
 Outputs a dictionary with keys:
 - tables: list of table dicts with keys:
     - html: HTML table string (class='analysis-table')
-    - columns: list[str] (when derivable)
-    - rows: list[list[str]] (when derivable)
+    - columns_full: list[str] (full, when derivable)
+    - rows_full: list[list[str]] (full, when derivable)
+    - columns: list[str] (UI-trimmed view)
+    - rows: list[list[str]] (UI-trimmed view)
     - n_rows: int (original, before trimming)
     - n_cols: int (original, before trimming)
-    - source: 'html' | 'markdown' | 'ascii'
+    - truncated: bool (whether UI-trim occurred)
+    - source: 'json' | 'html' | 'markdown' | 'ascii' | 'text_fallback'
     - title: Optional[str]
 - stats: list[dict] items like {"name": str, "value": str}
 - messages: list[str] (warnings/errors/tracebacks lines)
@@ -289,9 +292,19 @@ def parse_json_block(
         except Exception:
             n_cols = max((len(r) for r in rows), default=len(cols))
 
-        # Preserve full rows/cols from JSON without trimming for fidelity
+        # Preserve full rows/cols from JSON
         full_cols = list(map(str, cols))
         full_rows = [[str(v) for v in r] for r in rows]
+
+        # UI-trim only if explicitly allowed to limit JSON
+        if not getattr(settings, "no_limit_for_json", True):
+            tcols, trows = _trim_table(full_cols, full_rows, max_rows, max_cols)
+            truncated = (len(full_rows) > len(trows)) or (
+                max((len(r) for r in full_rows), default=len(full_cols)) > len(tcols)
+            )
+        else:
+            tcols, trows = full_cols, full_rows
+            truncated = False
 
         # Build normalized HTML as fallback (using full data)
         html_norm = _build_html_table(full_cols, full_rows)
@@ -302,10 +315,13 @@ def parse_json_block(
 
         tables.append({
             "html": html_out,
-            "columns": full_cols,
-            "rows": full_rows,
+            "columns_full": full_cols,
+            "rows_full": full_rows,
+            "columns": tcols,
+            "rows": trows,
             "n_rows": n_rows,
             "n_cols": n_cols,
+            "truncated": truncated,
             "source": "json",
             "title": title,
         })
@@ -362,6 +378,25 @@ def parse_exec_output(logs: str, *, max_tables: int = 5, max_rows: int = 50, max
                     break
             json_res["excerpts"] = {"head": head, "mid": mid, "tail": tail}
             return json_res
+        # If strict JSON-only mode is enabled and we did not find a JSON block,
+        # do not attempt other parsing strategies; return empty structure with excerpts.
+        if getattr(settings, "strict_json_only", False):
+            head = logs[:800]
+            tail = logs[-800:] if len(logs) > 800 else ""
+            mid = None
+            for kw in ("Metric", "Variance Table", "DataFrame", "describe", "GroupBy", "Total"):
+                idx = logs.find(kw)
+                if idx != -1:
+                    start = max(0, idx - 600)
+                    end = min(len(logs), idx + 600)
+                    mid = logs[start:end]
+                    break
+            return {
+                "tables": [],
+                "stats": [],
+                "messages": [],
+                "excerpts": {"head": head, "mid": mid, "tail": tail},
+            }
 
     tables: List[Dict[str, Any]] = []
     stats: List[Dict[str, str]] = []
@@ -412,15 +447,23 @@ def parse_exec_output(logs: str, *, max_tables: int = 5, max_rows: int = 50, max
                 
         n_rows = len(rows)
         n_cols = max((len(r) for r in rows), default=len(cols))
-        # Trim and build normalized HTML
-        tcols, trows = _trim_table(cols, rows, max_rows, max_cols)
+        # Preserve full and add UI-trimmed view
+        full_cols = list(map(str, cols))
+        full_rows = [[str(v) for v in r] for r in rows]
+        tcols, trows = _trim_table(full_cols, full_rows, max_rows, max_cols)
         html_norm = _build_html_table(tcols, trows)
+        truncated = (len(full_rows) > len(trows)) or (
+            max((len(r) for r in full_rows), default=len(full_cols)) > len(tcols)
+        )
         tables.append({
             "html": html_tbl,
+            "columns_full": full_cols,
+            "rows_full": full_rows,
             "columns": tcols,
             "rows": trows,
             "n_rows": n_rows,
             "n_cols": n_cols,
+            "truncated": truncated,
             "source": "html",
             "title": title,
         })
@@ -444,14 +487,22 @@ def parse_exec_output(logs: str, *, max_tables: int = 5, max_rows: int = 50, max
         if header or rows:
             n_rows = len(rows)
             n_cols = max((len(r) for r in rows), default=len(header))
-            tcols, trows = _trim_table(header, rows, max_rows, max_cols)
+            full_cols = list(map(str, header))
+            full_rows = [[str(v) for v in r] for r in rows]
+            tcols, trows = _trim_table(full_cols, full_rows, max_rows, max_cols)
             html_norm = _build_html_table(tcols, trows)
+            truncated = (len(full_rows) > len(trows)) or (
+                max((len(r) for r in full_rows), default=len(full_cols)) > len(tcols)
+            )
             tables.append({
                 "html": html_norm,
+                "columns_full": full_cols,
+                "rows_full": full_rows,
                 "columns": tcols,
                 "rows": trows,
                 "n_rows": n_rows,
                 "n_cols": n_cols,
+                "truncated": truncated,
                 "source": "markdown",
                 "title": title,
             })
@@ -473,14 +524,22 @@ def parse_exec_output(logs: str, *, max_tables: int = 5, max_rows: int = 50, max
             if header or rows:
                 n_rows = len(rows)
                 n_cols = max((len(r) for r in rows), default=len(header))
-                tcols, trows = _trim_table(header, rows, max_rows, max_cols)
+                full_cols = list(map(str, header))
+                full_rows = [[str(v) for v in r] for r in rows]
+                tcols, trows = _trim_table(full_cols, full_rows, max_rows, max_cols)
                 html_norm = _build_html_table(tcols, trows)
+                truncated = (len(full_rows) > len(trows)) or (
+                    max((len(r) for r in full_rows), default=len(full_cols)) > len(tcols)
+                )
                 tables.append({
                     "html": html_norm,
+                    "columns_full": full_cols,
+                    "rows_full": full_rows,
                     "columns": tcols,
                     "rows": trows,
                     "n_rows": n_rows,
                     "n_cols": n_cols,
+                    "truncated": truncated,
                     "source": "ascii",
                     "title": title,
                 })
@@ -507,14 +566,22 @@ def parse_exec_output(logs: str, *, max_tables: int = 5, max_rows: int = 50, max
             if cols and rows:
                 n_rows = len(rows)
                 n_cols = max(len(cols), max((len(r) for r in rows), default=0))
-                tcols, trows = _trim_table(cols, rows, max_rows, max_cols)
+                full_cols = list(map(str, cols))
+                full_rows = [[str(v) for v in r] for r in rows]
+                tcols, trows = _trim_table(full_cols, full_rows, max_rows, max_cols)
                 html_norm = _build_html_table(tcols, trows)
+                truncated = (len(full_rows) > len(trows)) or (
+                    max((len(r) for r in full_rows), default=len(full_cols)) > len(tcols)
+                )
                 tables.append({
                     "html": html_norm,
+                    "columns_full": full_cols,
+                    "rows_full": full_rows,
                     "columns": tcols,
                     "rows": trows,
                     "n_rows": n_rows,
                     "n_cols": n_cols,
+                    "truncated": truncated,
                     "source": "text_fallback",
                     "title": "Extracted from text",
                 })

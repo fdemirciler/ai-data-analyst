@@ -213,15 +213,17 @@ def stream_summary_chunks(
         client = _get_llm_client(settings.llm_provider)
 
         logs_full = (exec_result or {}).get("logs", "") or ""
+        json_raw = (exec_result or {}).get("json_raw") or ""
+        logs_for_parser = json_raw or logs_full
         status = (exec_result or {}).get("status", "n/a")
         code = generated_code or ""
 
         # Parse or reuse structured output from execution logs
         structured = (exec_result or {}).get("structured") or parse_exec_output(
-            logs_full,
+            logs_for_parser,
             max_tables=int(settings.summary_max_tables),
-            max_rows=int(settings.summary_max_rows),
-            max_cols=int(settings.summary_max_cols),
+            max_rows=int(getattr(settings, "summary_ui_max_rows", settings.summary_max_rows)),
+            max_cols=int(getattr(settings, "summary_ui_max_cols", settings.summary_max_cols)),
         )
         # Persist back into exec_result for transparency
         try:
@@ -231,8 +233,9 @@ def stream_summary_chunks(
             pass
 
         # Helper to build HTML tables string with limits, preferring raw HTML unless it appears truncated
-        def build_tables_html(tables: list[dict], mt: int) -> str:
+        def build_tables_html(tables: list[dict], mt: int) -> tuple[str, list[dict]]:
             html_parts: list[str] = []
+            metrics: list[dict] = []
 
             def _html_row_count(s: str) -> int:
                 if not isinstance(s, str) or not s.strip():
@@ -241,31 +244,82 @@ def stream_summary_chunks(
                 segment = m.group(1) if m else s
                 return len(re.findall(r"<tr[^>]*>", segment, re.I))
 
+            pmr = int(getattr(settings, "summary_prompt_max_rows", settings.summary_max_rows))
+            pmc = int(getattr(settings, "summary_prompt_max_cols", settings.summary_max_cols))
+
             for t in (tables or [])[: mt if mt > 0 else 0]:
                 title = (t.get("title") or "").strip()
                 if title:
                     html_parts.append(f"Title: {title}\n")
-                raw_html = t.get("html")
-                cols = t.get("columns") or []
-                rows = t.get("rows") or []
-                # prefer raw html, but detect truncation vs reported/available rows
-                n_rows = 0
-                try:
-                    n_rows = int(t.get("n_rows") or (len(rows) if isinstance(rows, list) else 0))
-                except Exception:
-                    n_rows = len(rows) if isinstance(rows, list) else 0
-
-                if isinstance(raw_html, str) and raw_html.strip():
-                    html_rows = _html_row_count(raw_html)
-                    target_rows = n_rows or (len(rows) if isinstance(rows, list) else 0)
-                    if target_rows and html_rows and html_rows < target_rows and rows:
-                        # Rebuild from full rows to avoid truncated HTML
-                        html_parts.append(_build_html_table(cols, rows))
-                    else:
-                        html_parts.append(raw_html.strip())
+                source = t.get("source")
+                # JSON-first: always rebuild from full_* and apply prompt caps
+                if source == "json" and (t.get("columns_full") is not None or t.get("rows_full") is not None):
+                    cols_full = t.get("columns_full") or []
+                    rows_full = t.get("rows_full") or []
+                    tcols = cols_full[:pmc] if cols_full else cols_full
+                    trows = [r[:pmc] for r in rows_full[:pmr]]
+                    html_parts.append(_build_html_table(tcols, trows))
+                    # Metrics
+                    metrics.append({
+                        "source": source or "",
+                        "n_rows": int(t.get("n_rows") or len(rows_full)),
+                        "n_cols": int(t.get("n_cols") or (len(cols_full) if cols_full else max((len(r) for r in rows_full), default=0))),
+                        "truncated": bool(t.get("truncated")),
+                        "used_full_html": True,
+                        "used_raw_html": False,
+                        "used_prompt_caps": {"rows": pmr, "cols": pmc},
+                    })
                 else:
-                    html_parts.append(_build_html_table(cols, rows))
-            return "\n\n".join(html_parts)
+                    raw_html = t.get("html")
+                    cols_full = t.get("columns_full") or t.get("columns") or []
+                    rows_full = t.get("rows_full") or t.get("rows") or []
+                    # prefer raw html when clearly complete; otherwise rebuild from available data with prompt caps
+                    if isinstance(raw_html, str) and raw_html.strip():
+                        # Estimate completeness
+                        try:
+                            n_rows = int(t.get("n_rows") or (len(rows_full) if isinstance(rows_full, list) else 0))
+                        except Exception:
+                            n_rows = len(rows_full) if isinstance(rows_full, list) else 0
+                        html_rows = _html_row_count(raw_html)
+                        target_rows = n_rows or (len(rows_full) if isinstance(rows_full, list) else 0)
+                        if target_rows and html_rows and html_rows < target_rows and rows_full:
+                            tcols = cols_full[:pmc] if cols_full else cols_full
+                            trows = [r[:pmc] for r in rows_full[:pmr]]
+                            html_parts.append(_build_html_table(tcols, trows))
+                            metrics.append({
+                                "source": source or "",
+                                "n_rows": int(t.get("n_rows") or len(rows_full)),
+                                "n_cols": int(t.get("n_cols") or (len(cols_full) if cols_full else max((len(r) for r in rows_full), default=0))),
+                                "truncated": bool(t.get("truncated")),
+                                "used_full_html": True,
+                                "used_raw_html": False,
+                                "used_prompt_caps": {"rows": pmr, "cols": pmc},
+                            })
+                        else:
+                            html_parts.append(raw_html.strip())
+                            metrics.append({
+                                "source": source or "",
+                                "n_rows": int(t.get("n_rows") or len(rows_full)),
+                                "n_cols": int(t.get("n_cols") or (len(cols_full) if cols_full else max((len(r) for r in rows_full), default=0))),
+                                "truncated": bool(t.get("truncated")),
+                                "used_full_html": False,
+                                "used_raw_html": True,
+                                "used_prompt_caps": None,
+                            })
+                    else:
+                        tcols = cols_full[:pmc] if cols_full else cols_full
+                        trows = [r[:pmc] for r in rows_full[:pmr]]
+                        html_parts.append(_build_html_table(tcols, trows))
+                        metrics.append({
+                            "source": source or "",
+                            "n_rows": int(t.get("n_rows") or len(rows_full)),
+                            "n_cols": int(t.get("n_cols") or (len(cols_full) if cols_full else max((len(r) for r in rows_full), default=0))),
+                            "truncated": bool(t.get("truncated")),
+                            "used_full_html": True,
+                            "used_raw_html": False,
+                            "used_prompt_caps": {"rows": pmr, "cols": pmc},
+                        })
+            return "\n\n".join(html_parts), metrics
 
         # Collect excerpts for fallback only
         excerpts = structured.get("excerpts", {}) if structured else {}
@@ -276,16 +330,19 @@ def stream_summary_chunks(
 
         # Function to assemble the prompt with current limits (simplified)
         def assemble_prompt(mt: int) -> str:
-            tables_html = build_tables_html(structured.get("tables", []), mt)
+            tables_html, _ = build_tables_html(structured.get("tables", []), mt)
             prompt_parts = [
-                "You are a senior data analyst. Base your answer only on the execution output below.\n\n",
-                "RESPONSE FORMAT:\n",
-                "- Use clear markdown section headings (e.g., ## Overview, ## Key Findings).\n",
-                "- Any tables in your response must be HTML-only (<table>, <tr>, <th>, <td>).\n",
-                "- Keep values faithful to the data; do not invent columns or periods.\n\n",
+                "You are a senior data analyst. Provide a comprehensive analysis that directly answers the user's question.\n\n",
+                "CRITICAL REQUIREMENTS:\n",
+                "- Integrate the provided HTML tables naturally within your analysis narrative\n",
+                "- Reference specific data points from the tables in your explanations\n",
+                "- Use clear section headings (## Overview, ## Key Findings, etc.)\n",
+                "- Be factual and specific - cite actual values from the data\n",
+                "- Include HTML tables where they support your analysis\n\n",
                 f"User Question: {question}\n\n",
-                "## Structured Execution Output\n",
-                (tables_html + "\n\n") if tables_html else "(No tables detected)\n\n",
+                "Available Data Tables:\n",
+                (tables_html + "\n\n") if tables_html else "(No structured data available)\n\n",
+                "Provide your analysis below, embedding tables where relevant:\n\n",
             ]
             # Fallback excerpts if no tables
             if not tables_html:
@@ -303,24 +360,28 @@ def stream_summary_chunks(
             )
             return "".join(prompt_parts)
 
-        # Assemble and adaptively downscale if over budget (prefer keeping first table intact)
+        # Assemble and adaptively downscale based on table content size only
         initial_limits = {"max_tables": max_tables}
-        prompt = assemble_prompt(max_tables)
+        tables_html, _ = build_tables_html(structured.get("tables", []), max_tables)
+        table_budget = int(budget * 0.7)  # Reserve 70% of budget for table content
         downscaled = False
-        if len(prompt) > budget:
+        
+        # Check if tables exceed budget, not entire prompt
+        if len(tables_html) > table_budget:
             # Reduce only the number of tables
             table_steps = [max_tables, 3, 2, 1]
             t_idx = 0
             while t_idx < len(table_steps) and table_steps[t_idx] > max_tables:
                 t_idx += 1
             for t_try in range(t_idx, len(table_steps)):
-                prompt = assemble_prompt(table_steps[t_try])
-                if len(prompt) <= budget:
+                test_html, _ = build_tables_html(structured.get("tables", []), table_steps[t_try])
+                if len(test_html) <= table_budget:
                     max_tables = table_steps[t_try]
                     downscaled = True
                     break
-            # Final assemble with the best limits found
-            prompt = assemble_prompt(max_tables)
+        
+        # Final assemble with the best limits found
+        prompt = assemble_prompt(max_tables)
 
         # Log the prompt for debugging
         log_llm_generation(
@@ -344,6 +405,8 @@ def stream_summary_chunks(
                 parse_path = "text_fallback"
             else:
                 parse_path = "none"
+            # Capture per-table metrics used in prompt
+            used_html, table_metrics = build_tables_html(structured.get("tables", []), max_tables)
             obs = {
                 "parse_path": parse_path,
                 "prompt_chars": len(prompt),
@@ -356,12 +419,20 @@ def stream_summary_chunks(
             # Attach to exec_result for downstream visibility
             if isinstance(exec_result, dict):
                 exec_result.setdefault("observability", {})["summary"] = obs
+                exec_result["observability"]["tables"] = table_metrics
             # Also log a compact line
             log_llm_generation(
                 f"OBS parse_path={parse_path} prompt={len(prompt)}/{budget} downscaled={downscaled} limits={obs['final_limits']}",
                 len(prompt),
                 True,
             )
+            # Log per-table compacts
+            for i, m in enumerate(table_metrics):
+                log_llm_generation(
+                    f"TABLE[{i}] src={m.get('source')} n={m.get('n_rows')}x{m.get('n_cols')} trunc={m.get('truncated')} full={m.get('used_full_html')} raw={m.get('used_raw_html')}",
+                    0,
+                    True,
+                )
         except Exception:
             pass
 

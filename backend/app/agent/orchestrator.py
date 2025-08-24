@@ -109,51 +109,6 @@ def run_agent_response(
 
             if llm_chunks:
                 answer = "".join(llm_chunks)
-                # Prepend tables (prefer raw HTML when available) so they render in the UI
-                structured = exec_result.get("structured") or {}
-                tables = (structured.get("tables") if isinstance(structured, dict) else None) or []
-                if tables:
-                    mt = int(getattr(settings, "summary_max_tables", 5))
-                    mr = int(getattr(settings, "summary_max_rows", 50))
-                    mc = int(getattr(settings, "summary_max_cols", 15))
-                    html_parts: List[str] = []
-
-                    def _html_row_count(s: str) -> int:
-                        if not isinstance(s, str) or not s.strip():
-                            return 0
-                        m = re.search(r"<tbody[^>]*>(.*?)</tbody>", s, re.I | re.S)
-                        segment = m.group(1) if m else s
-                        return len(re.findall(r"<tr[^>]*>", segment, re.I))
-
-                    for t in tables[:mt]:
-                        title = (t.get("title") or "").strip()
-                        if title:
-                            html_parts.append(f"<p><strong>Title: {title}</strong></p>")
-                        raw_html = t.get("html")
-                        cols = t.get("columns") or []
-                        rows = t.get("rows") or []
-                        # Prefer raw html unless it appears truncated vs reported rows
-                        try:
-                            n_rows = int(t.get("n_rows") or (len(rows) if isinstance(rows, list) else 0))
-                        except Exception:
-                            n_rows = len(rows) if isinstance(rows, list) else 0
-
-                        if isinstance(raw_html, str) and raw_html.strip():
-                            html_rows = _html_row_count(raw_html)
-                            target_rows = n_rows or (len(rows) if isinstance(rows, list) else 0)
-                            if target_rows and html_rows and html_rows < target_rows and rows:
-                                # Rebuild from FULL rows/cols (untrimmed) to avoid truncated HTML
-                                html_parts.append(_build_html_table(cols, rows))
-                            else:
-                                html_parts.append(raw_html.strip())
-                        else:
-                            # Fallback to a trimmed rebuild if no raw HTML is available
-                            tcols = cols[:mc] if cols else cols
-                            trows = [r[:mc] for r in rows[:mr]]
-                            html_parts.append(_build_html_table(tcols, trows))
-                    preface = "\n\n".join(html_parts)
-                    if preface:
-                        answer = preface + "\n\n" + answer
                 log_final_decision("llm_summary", len(answer))
             else:
                 # Empty LLM response, fall back to exec logs + heuristic

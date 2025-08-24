@@ -22,7 +22,7 @@ class Settings(BaseModel):
     # LLM Provider: 'google' or 'together'
     llm_provider: str = "google"
     # Sampling / decoding
-    llm_temperature: float = 0.3
+    llm_temperature: float = 0.1
 
     # Google Gemini Settings
     gemini_api_key: str | None = None
@@ -43,9 +43,14 @@ class Settings(BaseModel):
     summary_include_errors_limit: int = 5
     # Max length for summarized LLM answer text (aggregated), 0 disables cap
     summary_max_answer_chars: int = 12000
+    # Separate caps for UI vs LLM prompt contexts
+    summary_ui_max_rows: int = 50
+    summary_ui_max_cols: int = 15
+    summary_prompt_max_rows: int = 500
+    summary_prompt_max_cols: int = 50
 
     # Sandbox / Truncation
-    sandbox_max_log_chars: int = 16000
+    sandbox_max_log_chars: int = 64000
 
     # JSON-first structured output
     enable_json_first: bool = True
@@ -53,6 +58,8 @@ class Settings(BaseModel):
     json_marker_begin: str = "<<<AI_DA_JSON_BEGIN>>>"
     json_marker_end: str = "<<<AI_DA_JSON_END>>>"
     json_include_html: bool = True
+    # When True, do not trim JSON tables at parse time; keep full rows/cols
+    no_limit_for_json: bool = True
 
     # Response sanitization
     enable_response_sanitizer: bool = True
@@ -100,11 +107,11 @@ def load_settings() -> Settings:
         ttl_val = None
 
     # Parse optional temperature
-    temp_raw = os.getenv("LLM_TEMPERATURE", "0.3")
+    temp_raw = os.getenv("LLM_TEMPERATURE", "0.1")
     try:
         temp_val = float(temp_raw)
     except Exception:
-        temp_val = 0.3
+        temp_val = 0.1
 
     # Structured summary env overrides
     try:
@@ -131,12 +138,29 @@ def load_settings() -> Settings:
         sum_max_answer_chars = int(os.getenv("SUMMARY_MAX_ANSWER_CHARS", "12000"))
     except Exception:
         sum_max_answer_chars = 12000
+    # Separate UI vs Prompt caps
+    try:
+        ui_max_rows = int(os.getenv("SUMMARY_UI_MAX_ROWS", "50"))
+    except Exception:
+        ui_max_rows = 50
+    try:
+        ui_max_cols = int(os.getenv("SUMMARY_UI_MAX_COLS", "15"))
+    except Exception:
+        ui_max_cols = 15
+    try:
+        prompt_max_rows = int(os.getenv("SUMMARY_PROMPT_MAX_ROWS", "500"))
+    except Exception:
+        prompt_max_rows = 500
+    try:
+        prompt_max_cols = int(os.getenv("SUMMARY_PROMPT_MAX_COLS", "50"))
+    except Exception:
+        prompt_max_cols = 50
 
     # Sandbox truncation budget
     try:
-        sandbox_max_log_chars = int(os.getenv("SANDBOX_MAX_LOG_CHARS", "16000"))
+        sandbox_max_log_chars = int(os.getenv("SANDBOX_MAX_LOG_CHARS", "64000"))
     except Exception:
-        sandbox_max_log_chars = 16000
+        sandbox_max_log_chars = 64000
 
     # JSON-first flags and markers
     enable_json_first = _env_bool("ENABLE_JSON_FIRST", True)
@@ -144,6 +168,7 @@ def load_settings() -> Settings:
     json_marker_begin = os.getenv("JSON_MARKER_BEGIN", "<<<AI_DA_JSON_BEGIN>>>")
     json_marker_end = os.getenv("JSON_MARKER_END", "<<<AI_DA_JSON_END>>>")
     json_include_html = _env_bool("JSON_INCLUDE_HTML", True)
+    no_limit_for_json = _env_bool("NO_LIMIT_FOR_JSON", True)
     enable_response_sanitizer = _env_bool("ENABLE_RESPONSE_SANITIZER", True)
 
     return Settings(
@@ -175,12 +200,17 @@ def load_settings() -> Settings:
         summary_prompt_char_budget=sum_prompt_budget,
         summary_include_errors_limit=sum_err_limit,
         summary_max_answer_chars=sum_max_answer_chars,
+        summary_ui_max_rows=ui_max_rows,
+        summary_ui_max_cols=ui_max_cols,
+        summary_prompt_max_rows=prompt_max_rows,
+        summary_prompt_max_cols=prompt_max_cols,
         sandbox_max_log_chars=sandbox_max_log_chars,
         enable_json_first=enable_json_first,
         strict_json_only=strict_json_only,
         json_marker_begin=json_marker_begin,
         json_marker_end=json_marker_end,
         json_include_html=json_include_html,
+        no_limit_for_json=no_limit_for_json,
         enable_response_sanitizer=enable_response_sanitizer,
     )
 

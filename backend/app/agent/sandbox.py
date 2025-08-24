@@ -128,6 +128,23 @@ def _smart_truncate_logs(logs: str, max_chars: int = 16000) -> str:
     return result
 
 
+def _extract_json_block(logs: str) -> str | None:
+    """Return the full JSON block including markers if present, else None."""
+    try:
+        begin_marker = settings.json_marker_begin
+        end_marker = settings.json_marker_end
+        b = logs.rfind(begin_marker)
+        if b == -1:
+            return None
+        e = logs.find(end_marker, b + len(begin_marker))
+        if e == -1:
+            return None
+        e += len(end_marker)
+        return logs[b:e]
+    except Exception:
+        return None
+
+
 def execute_analysis_script(
     code: str, dataset_path: str | Path, timeout_seconds: int = 30
 ) -> Dict[str, Any]:
@@ -228,6 +245,8 @@ def execute_analysis_script(
             result = {
                 "status": status,
                 "exit_code": exit_code,
+                # Keep a copy of the raw JSON block (if present) separate from truncated logs
+                "json_raw": _extract_json_block(logs),
                 "logs": _smart_truncate_logs(
                     logs,
                     max_chars=int(getattr(settings, "sandbox_max_log_chars", 16000)),
